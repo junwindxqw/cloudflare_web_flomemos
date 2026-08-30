@@ -7,7 +7,7 @@
 基于 Cloudflare 免费服务构建的 flomo 风格单用户笔记应用
 Workers + D1 + R2 · 零服务器运维 · 一键部署 · 完全属于你自己的数据
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/yourname/cloudflare_web_flomemos)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/junwindxqw/cloudflare_web_flomemos)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-orange.svg)](https://workers.cloudflare.com/)
 [![D1](https://img.shields.io/badge/Storage-D1%20·%20R2-brightgreen.svg)](https://developers.cloudflare.com/d1/)
@@ -83,7 +83,7 @@ Workers + D1 + R2 · 零服务器运维 · 一键部署 · 完全属于你自己
 
 ```bash
 # 1. 克隆项目并安装依赖
-git clone <你的仓库地址> flomemos && cd flomemos
+git clone https://github.com/junwindxqw/cloudflare_web_flomemos.git flomemos && cd flomemos
 npm install
 
 # 2. 登录 Cloudflare（浏览器授权）
