@@ -1,0 +1,6 @@
+# 本地开发用的环境变量示例。
+# 复制为 .dev.vars（已被 .gitignore 忽略，不会提交）即可在 wrangler dev 中生效。
+# 留空或不配置时，首次打开页面会出现「初始化账号」界面，账号密码保存在 D1 数据库中。
+#
+# AUTH_USERNAME=admin
+# AUTH_PASSWORD=admin123

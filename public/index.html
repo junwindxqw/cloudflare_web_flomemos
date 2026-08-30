@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Flomemos · 云端便签</title>
+  <meta name="description" content="Flomemos —— 部署在 Cloudflare 免费服务上的 flomo 风格单用户笔记便签">
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <!-- 登录 / 初始化视图 -->
+  <div id="auth-view" class="auth-view hidden">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <span class="brand-logo">浮</span>
+        <h1>Flomemos</h1>
+        <p class="auth-subtitle">轻记录，像发消息一样简单</p>
+      </div>
+
+      <form id="login-form" autocomplete="on">
+        <label class="field">
+          <span>账号</span>
+          <input type="text" id="login-username" name="username" autocomplete="username" required maxlength="32">
+        </label>
+        <label class="field">
+          <span>密码</span>
+          <input type="password" id="login-password" name="password" autocomplete="current-password" required>
+        </label>
+        <p id="login-error" class="form-error hidden"></p>
+        <button type="submit" class="btn btn-primary btn-block" id="login-submit">登 录</button>
+      </form>
+
+      <form id="setup-form" class="hidden" autocomplete="off">
+        <p class="setup-hint">首次使用，先创建你的专属账号（账号密码保存在你自己的数据库里）。</p>
+        <label class="field">
+          <span>账号</span>
+          <input type="text" id="setup-username" maxlength="32" required>
+        </label>
+        <label class="field">
+          <span>密码（至少 6 位）</span>
+          <input type="password" id="setup-password" minlength="6" maxlength="128" required>
+        </label>
+        <label class="field">
+          <span>确认密码</span>
+          <input type="password" id="setup-password2" minlength="6" maxlength="128" required>
+        </label>
+        <p id="setup-error" class="form-error hidden"></p>
+        <button type="submit" class="btn btn-primary btn-block">创建并进入</button>
+      </form>
+    </div>
+    <p class="auth-footer">Flomemos · 单用户私有部署 · 运行于 Cloudflare Workers</p>
+  </div>
+
+  <!-- 主视图 -->
+  <div id="main-view" class="layout hidden">
+    <div id="sidebar-mask" class="sidebar-mask"></div>
+
+    <aside id="sidebar" class="sidebar">
+      <div class="brand">
+        <span class="brand-logo">浮</span>
+        <span class="brand-name">Flomemos</span>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-item active" data-nav="all">📝 全部笔记 <span class="nav-count" id="count-total"></span></button>
+        <button class="nav-item" data-nav="pinned">⭐ 收藏</button>
+        <button class="nav-item" data-nav="review">🎲 随机回顾</button>
+        <button class="nav-item" data-nav="stats">📊 统计</button>
+      </nav>
+
+      <div class="side-section">
+        <div class="side-title">标签</div>
+        <div id="tag-list" class="tag-list"><p class="tag-empty">暂无标签，在笔记里用 #标签 即可创建</p></div>
+      </div>
+
+      <div class="side-footer">
+        <button id="theme-toggle" class="side-link">🌙 夜间模式</button>
+        <button id="export-md" class="side-link">⬇️ 导出 Markdown</button>
+        <button id="export-json" class="side-link">⬇️ 导出 JSON</button>
+        <button id="logout" class="side-link danger">↩ 退出登录</button>
+      </div>
+    </aside>
+
+    <main class="main" id="main-scroll">
+      <header class="topbar">
+        <button id="menu-btn" class="icon-btn menu-btn" title="菜单">☰</button>
+        <div class="search-box">
+          <input type="search" id="search-input" placeholder="搜索笔记…" autocomplete="off">
+          <button id="search-clear" class="icon-btn hidden" title="清除">✕</button>
+        </div>
+      </header>
+
+      <div class="main-inner">
+        <section id="filter-bar" class="filter-bar hidden">
+          <span id="filter-text" class="filter-chip"></span>
+          <button id="filter-clear" class="icon-btn" title="取消过滤">✕</button>
+        </section>
+
+        <section id="editor-mount"></section>
+
+        <section id="memo-list" class="memo-list" aria-live="polite"></section>
+        <div id="sentinel" class="sentinel hidden"><span class="spinner"></span></div>
+        <p id="list-end" class="list-end hidden">· 到底啦 ·</p>
+      </div>
+    </main>
+  </div>
+
+  <!-- 随机回顾弹窗 -->
+  <div id="review-modal" class="modal hidden">
+    <div class="modal-mask" data-close="review-modal"></div>
+    <div class="modal-dialog">
+      <header class="modal-head">
+        <h2>🎲 随机回顾</h2>
+        <div class="modal-actions">
+          <button id="review-refresh" class="btn btn-ghost">换一批</button>
+          <button class="icon-btn" data-close="review-modal" title="关闭">✕</button>
+        </div>
+      </header>
+      <div id="review-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- 统计弹窗 -->
+  <div id="stats-modal" class="modal hidden">
+    <div class="modal-mask" data-close="stats-modal"></div>
+    <div class="modal-dialog">
+      <header class="modal-head">
+        <h2>📊 统计</h2>
+        <div class="modal-actions">
+          <button class="icon-btn" data-close="stats-modal" title="关闭">✕</button>
+        </div>
+      </header>
+      <div id="stats-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <div id="toast-wrap" class="toast-wrap"></div>
+
+  <script src="/vendor/marked.min.js"></script>
+  <script src="/vendor/purify.min.js"></script>
+  <script type="module" src="/assets/app.js"></script>
+</body>
+</html>
