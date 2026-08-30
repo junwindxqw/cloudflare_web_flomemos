@@ -48,9 +48,12 @@ async function readJsonBody(request) {
 }
 
 // 同源校验：浏览器为跨站请求附带 Origin 头，与请求目标 host（含端口）不一致即拒绝。
-function originHostOf(originHeader) {
-  const match = String(originHeader).match(/^https?:\/\/([^/?#]+)/i);
-  return match ? match[1].toLowerCase() : '';
+// Origin 缺失视为同源（curl 等非浏览器客户端不携带；跨站 Cookie 已被 SameSite=Lax 拦截）。
+function isSameOrigin(request, url) {
+  const origin = request.headers.get('Origin');
+  if (!origin) return true;
+  const match = String(origin).match(/^https?:\/\/([^/?#]+)/i);
+  return Boolean(match) && match[1].toLowerCase() === url.host;
 }
 
 // ---------- 注册/登录限速（单实例内存级，尽力而为） ----------
@@ -497,7 +500,7 @@ async function handleApi(request, env, url, secure) {
   if (method === 'POST' && pathname === '/api/auth/login') return handleLogin(request, env, url, secure);
 
   // 写操作做同源校验
-  if (method !== 'GET' && originHostOf(request.headers.get('Origin') || '') !== url.host) {
+  if (method !== 'GET' && !isSameOrigin(request, url)) {
     return errorJson(403, '跨站请求被拒绝');
   }
 
