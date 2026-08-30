@@ -1,9 +1,10 @@
-// 极简 API 封装：JSON 序列化、错误归一、401 全局事件。
+// 极简 API 封装：JSON 序列化、错误归一、401/封禁全局事件。
 
 export class ApiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, code) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -36,7 +37,10 @@ export async function api(path, { method = 'GET', body } = {}) {
     if (res.status === 401) {
       document.dispatchEvent(new CustomEvent('fm:unauthorized'));
     }
-    throw new ApiError(data?.error || `请求失败（${res.status}）`, res.status);
+    if (res.status === 403 && data?.code === 'banned') {
+      document.dispatchEvent(new CustomEvent('fm:banned', { detail: data.error }));
+    }
+    throw new ApiError(data?.error || '请求失败（' + res.status + '）', res.status, data?.code);
   }
   return data;
 }

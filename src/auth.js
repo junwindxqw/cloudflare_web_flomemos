@@ -4,6 +4,9 @@ const PBKDF2_ITERATIONS = 30000;
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const COOKIE_NAME = 'fm_session';
 
+// 用于"用户不存在"时消耗等量计算，避免登录接口的时序侧信道
+const DUMMY_PASSWORD_HASH = 'pbkdf2$30000$c3BlbmQtbWVtbXMtZHVtbHktc2FsdA==$4uYc9QpQWZCRL3YeG8jmFZPz5vPKJDWaUzYfRzOCHoQ=';
+
 const encoder = new TextEncoder();
 
 function toBase64(bytes) {
@@ -37,7 +40,7 @@ async function pbkdf2Bits(password, salt, iterations) {
 export async function hashPassword(password) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const bits = await pbkdf2Bits(password, salt, PBKDF2_ITERATIONS);
-  return `pbkdf2$${PBKDF2_ITERATIONS}$${toBase64(salt)}$${toBase64(new Uint8Array(bits))}`;
+  return 'pbkdf2$' + PBKDF2_ITERATIONS + '$' + toBase64(salt) + '$' + toBase64(new Uint8Array(bits));
 }
 
 function constantTimeEqual(a, b) {
@@ -48,7 +51,11 @@ function constantTimeEqual(a, b) {
 }
 
 export async function verifyStoredPassword(password, stored) {
-  const [scheme, iterStr, saltB64, hashB64] = String(stored || '').split('$');
+  const parts = String(stored || '').split('$');
+  const scheme = parts[0];
+  const iterStr = parts[1];
+  const saltB64 = parts[2];
+  const hashB64 = parts[3];
   if (scheme !== 'pbkdf2' || !iterStr || !saltB64 || !hashB64) return false;
   const iterations = Number(iterStr);
   if (!Number.isFinite(iterations) || iterations < 1) return false;
@@ -56,9 +63,9 @@ export async function verifyStoredPassword(password, stored) {
   return constantTimeEqual(toBase64(new Uint8Array(bits)), hashB64);
 }
 
-// 环境变量明文密码的比较：先散列再做常数时间对比
-export async function constantTimeEqualText(a, b) {
-  return constantTimeEqual(await sha256Hex(String(a ?? '')), await sha256Hex(String(b ?? '')));
+// 用户不存在时也做一次等价校验，抹平响应时间差
+export async function dummyVerify(password) {
+  await verifyStoredPassword(password, DUMMY_PASSWORD_HASH);
 }
 
 export function parseCookies(request) {
@@ -77,11 +84,11 @@ export function parseCookies(request) {
   return cookies;
 }
 
-export async function createSession(db) {
+export async function createSession(db, userId) {
   const token = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
   const tokenHash = await sha256Hex(token);
   const expiresAt = Date.now() + SESSION_TTL_SECONDS * 1000;
-  await db.prepare('INSERT INTO sessions (token_hash, expires_at) VALUES (?, ?)').bind(tokenHash, expiresAt).run();
+  await db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').bind(tokenHash, userId, expiresAt).run();
   // 顺手清理过期会话（约 5% 概率触发，避免堆积）
   if (Math.random() < 0.05) {
     await db.prepare('DELETE FROM sessions WHERE expires_at < ?').bind(Date.now()).run();
@@ -90,25 +97,30 @@ export async function createSession(db) {
 }
 
 export function sessionCookie(token, maxAge, secure) {
-  const flags = `Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`;
-  return `${COOKIE_NAME}=${token}; ${flags}${secure ? '; Secure' : ''}`;
+  const flags = 'Path=/; HttpOnly; SameSite=Lax; Max-Age=' + maxAge;
+  return COOKIE_NAME + '=' + token + '; ' + flags + (secure ? '; Secure' : '');
 }
 
 export function clearSessionCookie(secure) {
-  return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? '; Secure' : ''}`;
+  return COOKIE_NAME + '=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0' + (secure ? '; Secure' : '');
 }
 
-export async function isAuthenticated(db, request) {
+// 返回：null（无会话/会话失效）| { banned: true }（已封禁）| { user: {id, username, role} }
+export async function currentUser(db, request) {
   const token = parseCookies(request)[COOKIE_NAME];
-  if (!token) return false;
+  if (!token) return null;
   const tokenHash = await sha256Hex(token);
-  const row = await db.prepare('SELECT expires_at FROM sessions WHERE token_hash = ?').bind(tokenHash).first();
-  if (!row) return false;
+  const row = await db
+    .prepare('SELECT u.id, u.username, u.role, u.banned, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?')
+    .bind(tokenHash)
+    .first();
+  if (!row) return null;
   if (row.expires_at < Date.now()) {
     await db.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run();
-    return false;
+    return null;
   }
-  return true;
+  if (row.banned) return { banned: true };
+  return { user: { id: row.id, username: row.username, role: row.role } };
 }
 
 export async function destroySession(db, request) {
@@ -116,4 +128,19 @@ export async function destroySession(db, request) {
   if (!token) return;
   const tokenHash = await sha256Hex(token);
   await db.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run();
+}
+
+// 环境变量配置的管理员账号：仅在系统中尚无管理员时播种一次（保证"只有一个管理员"）
+let envAdminChecked = false;
+export async function ensureEnvAdmin(env) {
+  if (envAdminChecked) return;
+  envAdminChecked = true;
+  if (!env.AUTH_USERNAME || !env.AUTH_PASSWORD) return;
+  const admin = await env.DB.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").first();
+  if (admin) return;
+  const passwordHash = await hashPassword(env.AUTH_PASSWORD);
+  await env.DB
+    .prepare("INSERT OR IGNORE INTO users (username, password_hash, role, created_at) VALUES (?, ?, 'admin', ?)")
+    .bind(env.AUTH_USERNAME, passwordHash, new Date().toISOString())
+    .run();
 }

@@ -1,4 +1,4 @@
-// Flomemos 前端入口：登录 / 笔记列表 / 编辑器 / 标签 / 搜索 / 统计 / 回顾
+// Flomemos 前端入口：登录注册 / 笔记列表 / 编辑器 / 标签 / 搜索 / 统计 / 回顾 / 用户管理
 
 import { api, ApiError } from './api.js';
 import { renderMemoHtml, escapeHtml } from './md.js';
@@ -8,6 +8,7 @@ const $ = (sel) => document.querySelector(sel);
 
 const state = {
   username: '',
+  role: 'user',
   view: 'all', // all | pinned | tag
   tag: '',
   q: '',
@@ -63,15 +64,35 @@ function dayInfo(iso) {
   return { label, key };
 }
 
+function handleActionError(err) {
+  if (err instanceof ApiError && (err.status === 401 || err.code === 'banned')) return; // 已由全局事件处理
+  toast(err.message, 'error');
+}
+
 // ---------------- 视图切换 ----------------
-function showAuth(needsSetup) {
+function setAuthTab(mode) {
+  document.querySelectorAll('.auth-tab').forEach((b) => {
+    b.classList.toggle('active', b.dataset.tab === mode);
+  });
+  $('#login-form').classList.toggle('hidden', mode !== 'login');
+  $('#register-form').classList.toggle('hidden', mode !== 'register');
+}
+
+function showAuth(opts = {}) {
+  const mode = opts.mode || 'login';
   $('#auth-view').classList.remove('hidden');
   $('#main-view').classList.add('hidden');
-  $('#login-form').classList.toggle('hidden', !!needsSetup);
-  $('#setup-form').classList.toggle('hidden', !needsSetup);
+  $('#auth-tabs').classList.toggle('hidden', opts.hideTabs);
+  setAuthTab(mode);
+  $('#register-hint').classList.toggle('hidden', !opts.showAdminHint);
+  const errEl = mode === 'register' ? $('#register-error') : $('#login-error');
   $('#login-error').classList.add('hidden');
-  $('#setup-error').classList.add('hidden');
-  (needsSetup ? $('#setup-username') : $('#login-username')).focus();
+  $('#register-error').classList.add('hidden');
+  if (opts.message) {
+    errEl.textContent = opts.message;
+    errEl.classList.remove('hidden');
+  }
+  (mode === 'register' ? $('#register-username') : $('#login-username')).focus();
 }
 
 function showMain() {
@@ -80,8 +101,11 @@ function showMain() {
   closeSidebar();
 }
 
-function enterApp(username) {
-  state.username = username;
+function enterApp(user) {
+  state.username = user.username;
+  state.role = user.role || 'user';
+  $('#nav-admin').classList.toggle('hidden', state.role !== 'admin');
+  renderSideUser();
   showMain();
   mountEditor();
   refreshTags();
@@ -89,26 +113,51 @@ function enterApp(username) {
   updateTotalCount();
 }
 
+function renderSideUser() {
+  const el = $('#side-user');
+  el.innerHTML = '';
+  const icon = document.createElement('span');
+  icon.textContent = state.role === 'admin' ? '👑' : '👤';
+  const name = document.createElement('span');
+  name.className = 'side-user-name';
+  name.textContent = state.username;
+  const badge = document.createElement('span');
+  badge.className = 'role-badge' + (state.role === 'admin' ? ' role-admin' : '');
+  badge.textContent = state.role === 'admin' ? '管理员' : '成员';
+  el.append(icon, name, badge);
+}
+
 document.addEventListener('fm:unauthorized', () => {
   if (!$('#auth-view').classList.contains('hidden')) return;
-  showAuth(false);
+  showAuth({ mode: 'login' });
   toast('登录已过期，请重新登录', 'error');
 });
 
-// ---------------- 登录 / 初始化 ----------------
+document.addEventListener('fm:banned', (e) => {
+  showAuth({ mode: 'login', message: e.detail || '该账号已被封禁，请联系管理员' });
+});
+
+// ---------------- 启动 ----------------
 async function boot() {
   applyTheme(localStorage.getItem('fm-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
   try {
     const me = await api('/api/me');
-    if (me.authenticated) enterApp(me.username);
-    else showAuth(me.needsSetup);
+    if (me.authenticated) enterApp({ username: me.username, role: me.role });
+    else showAuth({ mode: me.hasUsers ? 'login' : 'register', hideTabs: !me.hasUsers, showAdminHint: !me.hasUsers });
   } catch (err) {
-    showAuth(false);
+    showAuth({ mode: 'login' });
     toast(err.message || '加载失败', 'error');
   }
 }
 
+// ---------------- 登录 / 注册 ----------------
 function bindAuthForms() {
+  document.querySelectorAll('.auth-tab').forEach((b) => {
+    b.addEventListener('click', () => {
+      showAuth({ mode: b.dataset.tab, showAdminHint: !$('#register-hint').classList.contains('hidden') && b.dataset.tab === 'register' });
+    });
+  });
+
   $('#login-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const errEl = $('#login-error');
@@ -118,30 +167,30 @@ function bindAuthForms() {
         method: 'POST',
         body: { username: $('#login-username').value.trim(), password: $('#login-password').value },
       });
-      enterApp(res.username);
+      enterApp({ username: res.username, role: res.role });
     } catch (err) {
       errEl.textContent = err.message;
       errEl.classList.remove('hidden');
     }
   });
 
-  $('#setup-form').addEventListener('submit', async (e) => {
+  $('#register-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const errEl = $('#setup-error');
+    const errEl = $('#register-error');
     errEl.classList.add('hidden');
-    const password = $('#setup-password').value;
-    if (password !== $('#setup-password2').value) {
+    const password = $('#register-password').value;
+    if (password !== $('#register-password2').value) {
       errEl.textContent = '两次输入的密码不一致';
       errEl.classList.remove('hidden');
       return;
     }
     try {
-      const res = await api('/api/auth/setup', {
+      const res = await api('/api/auth/register', {
         method: 'POST',
-        body: { username: $('#setup-username').value.trim(), password },
+        body: { username: $('#register-username').value.trim(), password },
       });
-      enterApp(res.username);
-      toast('账号创建成功，开始记录吧 ✨');
+      enterApp({ username: res.username, role: res.role });
+      toast(res.role === 'admin' ? '欢迎，管理员 🎉' : '注册成功，开始记录吧 ✨');
     } catch (err) {
       errEl.textContent = err.message;
       errEl.classList.remove('hidden');
@@ -213,7 +262,7 @@ async function loadMore() {
     state.nextBefore = res.memos.length ? res.memos[res.memos.length - 1].id : state.nextBefore;
     renderMemoList();
   } catch (err) {
-    if (!(err instanceof ApiError && err.status === 401)) toast(err.message, 'error');
+    handleActionError(err);
   } finally {
     state.loading = false;
     $('#sentinel').classList.add('hidden');
@@ -335,7 +384,7 @@ async function togglePin(memo) {
     renderMemoList();
     toast(memo.pinned ? '已收藏 ⭐' : '已取消收藏');
   } catch (err) {
-    if (!(err instanceof ApiError && err.status === 401)) toast(err.message, 'error');
+    handleActionError(err);
   }
 }
 
@@ -349,7 +398,7 @@ async function deleteMemo(memo) {
     updateTotalCount();
     toast('已删除');
   } catch (err) {
-    if (!(err instanceof ApiError && err.status === 401)) toast(err.message, 'error');
+    handleActionError(err);
   }
 }
 
@@ -488,7 +537,7 @@ function setNavActive(name) {
 
 function bindNav() {
   document.querySelectorAll('.nav-item').forEach((b) => {
-    b.addEventListener('click', async () => {
+    b.addEventListener('click', () => {
       const nav = b.dataset.nav;
       closeSidebar();
       if (nav === 'all') {
@@ -510,6 +559,8 @@ function bindNav() {
         openReview();
       } else if (nav === 'stats') {
         openStats();
+      } else if (nav === 'admin') {
+        openAdmin();
       }
     });
   });
@@ -561,9 +612,11 @@ function bindModals() {
     if (e.key === 'Escape') {
       $('#review-modal').classList.add('hidden');
       $('#stats-modal').classList.add('hidden');
+      $('#admin-modal').classList.add('hidden');
     }
   });
   $('#review-refresh').addEventListener('click', loadReview);
+  $('#admin-refresh').addEventListener('click', loadUsers);
 }
 
 function openReview() {
@@ -603,6 +656,109 @@ async function loadReview() {
   }
 }
 
+// ---------------- 用户管理（仅管理员） ----------------
+function openAdmin() {
+  $('#admin-modal').classList.remove('hidden');
+  loadUsers();
+}
+
+async function loadUsers() {
+  const body = $('#admin-body');
+  body.innerHTML = '<p class="modal-tip">加载中…</p>';
+  try {
+    const res = await api('/api/admin/users');
+    body.innerHTML = '';
+    const table = document.createElement('div');
+    table.className = 'admin-table';
+    for (const u of res.users) {
+      table.appendChild(renderUserRow(u));
+    }
+    body.appendChild(table);
+    const tip = document.createElement('p');
+    tip.className = 'admin-tip';
+    tip.textContent = '封禁后该用户将立即退出登录且无法再登录；删除会一并清除其全部笔记与图片，不可恢复。';
+    body.appendChild(tip);
+  } catch (err) {
+    body.innerHTML = '<p class="modal-tip">' + escapeHtml(err.message) + '</p>';
+  }
+}
+
+function renderUserRow(u) {
+  const row = document.createElement('div');
+  row.className = 'admin-row' + (u.banned ? ' banned' : '');
+
+  const info = document.createElement('div');
+  info.className = 'admin-user-info';
+  const name = document.createElement('span');
+  name.className = 'admin-user-name';
+  name.textContent = u.username;
+  info.appendChild(name);
+
+  const role = document.createElement('span');
+  role.className = 'role-badge' + (u.role === 'admin' ? ' role-admin' : '');
+  role.textContent = u.role === 'admin' ? '管理员' : '成员';
+  info.appendChild(role);
+
+  if (u.banned) {
+    const bannedBadge = document.createElement('span');
+    bannedBadge.className = 'role-badge role-banned';
+    bannedBadge.textContent = '已封禁';
+    info.appendChild(bannedBadge);
+  }
+
+  const meta = document.createElement('div');
+  meta.className = 'admin-user-meta';
+  meta.textContent = u.memo_count + ' 条笔记 · 注册于 ' + (u.created_at || '').slice(0, 10);
+  info.appendChild(meta);
+  row.appendChild(info);
+
+  const actions = document.createElement('div');
+  actions.className = 'admin-user-actions';
+  if (u.role !== 'admin') {
+    const banBtn = document.createElement('button');
+    banBtn.className = 'btn btn-ghost btn-sm';
+    banBtn.textContent = u.banned ? '解封' : '封禁';
+    banBtn.addEventListener('click', () => toggleBan(u));
+    actions.appendChild(banBtn);
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn btn-ghost btn-sm admin-delete';
+    delBtn.textContent = '删除';
+    delBtn.addEventListener('click', () => deleteUser(u));
+    actions.appendChild(delBtn);
+  } else {
+    const self = document.createElement('span');
+    self.className = 'admin-user-meta';
+    self.textContent = '——';
+    actions.appendChild(self);
+  }
+  row.appendChild(actions);
+  return row;
+}
+
+async function toggleBan(u) {
+  try {
+    const res = await api('/api/admin/users/' + u.id + '/ban', { method: 'POST', body: { banned: !u.banned } });
+    u.banned = res.banned;
+    loadUsers();
+    toast(u.banned ? '已封禁 ' + u.username : '已解封 ' + u.username);
+  } catch (err) {
+    handleActionError(err);
+  }
+}
+
+async function deleteUser(u) {
+  if (!confirm('确定删除用户「' + u.username + '」吗？\n其全部笔记与图片将一并删除，不可恢复。')) return;
+  try {
+    await api('/api/admin/users/' + u.id, { method: 'DELETE' });
+    loadUsers();
+    toast('已删除用户 ' + u.username);
+  } catch (err) {
+    handleActionError(err);
+  }
+}
+
+// ---------------- 统计 ----------------
 function openStats() {
   $('#stats-modal').classList.remove('hidden');
   loadStats();

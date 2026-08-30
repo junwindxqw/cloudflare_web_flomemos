@@ -18,9 +18,9 @@ Workers + D1 + R2 · 零服务器运维 · 一键部署 · 完全属于你自己
 
 ## ✨ 项目简介
 
-**Flomemos** 是一个借鉴 [flomo](https://flomoapp.com/)（浮墨笔记）交互风格的私有化便签应用。传统的 flomo 是云端服务，数据存在别人的服务器上；Flomemos 把整套体验搬到你自己名下的 **Cloudflare 免费套餐**上——不需要一台服务器，不需要付一分钱，数据 100% 归你所有。
+**Flomemos** 是一个借鉴 [flomo](https://flomoapp.com/)（浮墨笔记）交互风格的私有化笔记应用。传统的 flomo 是云端服务，数据存在别人的服务器上；Flomemos 把整套体验搬到你自己名下的 **Cloudflare 免费套餐**上——不需要一台服务器，不需要付一分钱，数据 100% 归你所有。
 
-它专为「单用户」设计：部署后创建一个专属账号，只有你能登录。适合随手记录灵感、读书摘抄、待办清单、日记碎片……并用 `#标签` 轻松归类。
+它支持**多用户**：开放注册，**第一个注册的用户自动成为全站唯一管理员**，可以封禁或删除其他用户；每个用户的笔记完全隔离、互不可见。适合个人知识库、家庭/小团队的轻量共享部署。
 
 > 💡 **为什么选择 Workers 而不是 Pages？**
 > Cloudflare 官方已推荐新项目使用 Workers 静态资产（Static Assets）替代 Pages。Flomemos 用**一个 Worker** 同时承载前端页面与 API，配置更简单，免费额度也更充裕。
@@ -46,12 +46,20 @@ Workers + D1 + R2 · 零服务器运维 · 一键部署 · 完全属于你自己
 - ✏️ **就地编辑**：点击笔记卡片直接进入编辑态
 - 📊 **统计面板**：累计笔记、今日新增、连续记录天数 + GitHub 风格的**半年热力图**
 
-### 🔐 账号与安全
+### 👥 多用户与管理员
 
-- 单用户登录，账号密码可**部署时通过环境变量配置**，或首次访问时在页面初始化（PBKDF2 散列存储）
+- **开放注册**：任何人可注册，**第一个注册的用户自动成为全站唯一管理员**
+- 管理员可**封禁 / 解封**用户：被封用户立即退出登录且无法再登录
+- 管理员可**删除**用户：连同其全部笔记、标签与图片一并清除（不可恢复）
+- 笔记、标签、统计、导出**完全按用户隔离**，互不可见
+- 图片按所有权保护，仅上传者本人可见（包括管理员也无法查看他人图片）
+- 管理员账号受保护：无法被封禁或删除
+
+### 🔐 账号与数据安全
+
+- 密码以 **PBKDF2** 散列存储，登录接口带失败限速与常数时间比较
 - 会话采用 `HttpOnly + SameSite=Lax` Cookie，登录态 30 天有效
-- 所有写操作做同源（Origin）校验，登录接口带失败限速
-- Markdown 渲染经 **DOMPurify** 消毒，杜绝 XSS；图片资源仅登录可见
+- 所有写操作做同源（Origin）校验；Markdown 渲染经 **DOMPurify** 消毒，杜绝 XSS
 
 ### 🧰 数据自主
 
@@ -117,8 +125,10 @@ npm run dev        # 启动 wrangler dev，访问 http://localhost:8787
 
 | 环境变量 | 必填 | 说明 |
 | --- | --- | --- |
-| `AUTH_USERNAME` | 否 | 登录账号。与 `AUTH_PASSWORD` 同时设置后，将启用环境变量登录（优先级高于数据库账号） |
-| `AUTH_PASSWORD` | 否 | 登录密码。建议在生产环境用 `npx wrangler secret put AUTH_PASSWORD` 写入加密 Secret |
+| `AUTH_USERNAME` | 否 | 预置**管理员**账号。与 `AUTH_PASSWORD` 同时设置时，若系统中尚无管理员则自动创建（已有管理员则忽略） |
+| `AUTH_PASSWORD` | 否 | 预置管理员密码。建议在生产环境用 `npx wrangler secret put AUTH_PASSWORD` 写入加密 Secret |
+
+> 不配置环境变量也完全可用：部署后第一个注册的用户自动成为管理员。
 
 | 绑定资源 | 用途 | 免费额度（每日/每月） |
 | --- | --- | --- |
@@ -169,8 +179,31 @@ flomemos/
 <details>
 <summary><b>如何修改密码？</b></summary>
 
-- **页面初始化的账号**：目前可在数据库中删除 `account` 表记录后重新走初始化流程（`npx wrangler d1 execute flomemos --remote --command "DELETE FROM account"`），或导出数据后重置。
-- **环境变量账号**：直接更新 `AUTH_USERNAME` / `AUTH_PASSWORD` 变量或 Secret 即可，即时生效。
+目前版本暂未提供页内改密功能。可在数据库中删除对应账号后重新注册（管理员执行）：
+
+```bash
+npx wrangler d1 execute flomemos --remote --command "DELETE FROM users WHERE username = '用户名'"
+```
+
+删除后用同一用户名重新注册即可（新注册的是普通成员；如需让其继续当管理员见下一条）。
+</details>
+
+<details>
+<summary><b>忘记管理员密码怎么办？</b></summary>
+
+删除管理员账号（或任何人）后重新注册，第一个注册的用户会成为管理员；若此时站点已有其他用户，也可以直接把某个用户提升为管理员：
+
+```bash
+npx wrangler d1 execute flomemos --remote --command "UPDATE users SET role='admin' WHERE username='用户名'"
+```
+
+（系统约定全站只有一位管理员，提升前建议先把原管理员移除。）
+</details>
+
+<details>
+<summary><b>旧版（单用户）数据会丢吗？</b></summary>
+
+不会。部署多用户版本后，应用启动时会自动迁移：原 `account` 表中的账号成为管理员，其全部笔记、标签、图片自动归属给该账号，会话保持有效。
 </details>
 
 <details>

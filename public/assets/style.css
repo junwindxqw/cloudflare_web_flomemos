@@ -771,3 +771,85 @@ input, textarea {
   .md-toolbar { padding: 6px; }
   .md-hint { display: none; }
 }
+
+/* ---------- 登录 / 注册切换 ---------- */
+.auth-tabs {
+  display: flex;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 3px;
+  margin-bottom: 18px;
+}
+.auth-tab {
+  flex: 1;
+  padding: 7px 0;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 14px;
+  transition: all 0.15s;
+}
+.auth-tab.active {
+  background: var(--card);
+  color: var(--accent);
+  font-weight: 500;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ---------- 用户信息与角色徽章 ---------- */
+.side-user {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 2px;
+  color: var(--text-soft);
+  font-size: 12.5px;
+}
+.side-user-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 96px;
+}
+.role-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 10.5px;
+  border-radius: 5px;
+  padding: 1px 6px;
+  background: var(--accent-softer);
+  color: var(--accent);
+}
+.role-badge.role-admin { background: rgba(234, 179, 8, 0.14); color: #ca9708; }
+[data-theme="dark"] .role-badge.role-admin { color: #f0c33c; }
+.role-badge.role-banned { background: var(--danger-weak); color: var(--danger); }
+
+/* ---------- 用户管理 ---------- */
+.admin-table { display: flex; flex-direction: column; gap: 8px; }
+.admin-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 14px;
+  transition: border 0.15s;
+}
+.admin-row:hover { border-color: var(--border-strong); }
+.admin-row.banned { opacity: 0.72; background: var(--danger-weak); }
+.admin-user-info { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.admin-user-name { font-weight: 500; }
+.admin-user-meta {
+  width: 100%;
+  color: var(--muted);
+  font-size: 12px;
+}
+.admin-user-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.admin-delete:hover { border-color: var(--danger); color: var(--danger); }
+.admin-tip {
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}

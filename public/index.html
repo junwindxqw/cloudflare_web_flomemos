@@ -5,18 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>Flomemos · 云端便签</title>
-  <meta name="description" content="Flomemos —— 部署在 Cloudflare 免费服务上的 flomo 风格单用户笔记便签">
+  <meta name="description" content="Flomemos —— 部署在 Cloudflare 免费服务上的 flomo 风格多用户笔记便签">
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body>
-  <!-- 登录 / 初始化视图 -->
+  <!-- 登录 / 注册视图 -->
   <div id="auth-view" class="auth-view hidden">
     <div class="auth-card">
       <div class="auth-brand">
         <span class="brand-logo">浮</span>
         <h1>Flomemos</h1>
         <p class="auth-subtitle">轻记录，像发消息一样简单</p>
+      </div>
+
+      <div id="auth-tabs" class="auth-tabs">
+        <button type="button" class="auth-tab active" data-tab="login">登录</button>
+        <button type="button" class="auth-tab" data-tab="register">注册</button>
       </div>
 
       <form id="login-form" autocomplete="on">
@@ -32,25 +37,25 @@
         <button type="submit" class="btn btn-primary btn-block" id="login-submit">登 录</button>
       </form>
 
-      <form id="setup-form" class="hidden" autocomplete="off">
-        <p class="setup-hint">首次使用，先创建你的专属账号（账号密码保存在你自己的数据库里）。</p>
+      <form id="register-form" class="hidden" autocomplete="off">
+        <p id="register-hint" class="setup-hint hidden">🎉 你是第一位注册的用户，将自动成为本站管理员</p>
         <label class="field">
           <span>账号</span>
-          <input type="text" id="setup-username" maxlength="32" required>
+          <input type="text" id="register-username" maxlength="32" required>
         </label>
         <label class="field">
           <span>密码（至少 6 位）</span>
-          <input type="password" id="setup-password" minlength="6" maxlength="128" required>
+          <input type="password" id="register-password" minlength="6" maxlength="128" required>
         </label>
         <label class="field">
           <span>确认密码</span>
-          <input type="password" id="setup-password2" minlength="6" maxlength="128" required>
+          <input type="password" id="register-password2" minlength="6" maxlength="128" required>
         </label>
-        <p id="setup-error" class="form-error hidden"></p>
-        <button type="submit" class="btn btn-primary btn-block">创建并进入</button>
+        <p id="register-error" class="form-error hidden"></p>
+        <button type="submit" class="btn btn-primary btn-block">注册并进入</button>
       </form>
     </div>
-    <p class="auth-footer">Flomemos · 单用户私有部署 · 运行于 Cloudflare Workers</p>
+    <p class="auth-footer">Flomemos · 私有部署 · 运行于 Cloudflare Workers</p>
   </div>
 
   <!-- 主视图 -->
@@ -68,6 +73,7 @@
         <button class="nav-item" data-nav="pinned">⭐ 收藏</button>
         <button class="nav-item" data-nav="review">🎲 随机回顾</button>
         <button class="nav-item" data-nav="stats">📊 统计</button>
+        <button class="nav-item hidden" data-nav="admin" id="nav-admin">👥 用户管理</button>
       </nav>
 
       <div class="side-section">
@@ -80,6 +86,7 @@
         <button id="export-md" class="side-link">⬇️ 导出 Markdown</button>
         <button id="export-json" class="side-link">⬇️ 导出 JSON</button>
         <button id="logout" class="side-link danger">↩ 退出登录</button>
+        <div id="side-user" class="side-user"></div>
       </div>
     </aside>
 
@@ -133,6 +140,21 @@
         </div>
       </header>
       <div id="stats-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- 用户管理弹窗（仅管理员） -->
+  <div id="admin-modal" class="modal hidden">
+    <div class="modal-mask" data-close="admin-modal"></div>
+    <div class="modal-dialog">
+      <header class="modal-head">
+        <h2>👥 用户管理</h2>
+        <div class="modal-actions">
+          <button id="admin-refresh" class="btn btn-ghost">刷新</button>
+          <button class="icon-btn" data-close="admin-modal" title="关闭">✕</button>
+        </div>
+      </header>
+      <div id="admin-body" class="modal-body"></div>
     </div>
   </div>
 
