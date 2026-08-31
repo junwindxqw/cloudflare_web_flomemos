@@ -1,5 +1,4 @@
-// Flomemos Worker：多用户版。同源提供静态资源（/api/*、/files/* 之外的路径交给 ASSETS）与 API。
-// 本应用不做任何服务端对外请求，仅读写 D1 / R2 绑定与返回静态资源。
+// Flomemos Worker：多用户邮箱注册版。同源提供静态资源（/api/*、/files/* 之外的路径交给 ASSETS）与 API。
 import { ensureSchema } from './migrate.js';
 import {
   createSession,
@@ -10,8 +9,8 @@ import {
   hashPassword,
   verifyStoredPassword,
   dummyVerify,
-  ensureEnvAdmin,
 } from './auth.js';
+import { sendVerificationCode, verifyCode } from './mail.js';
 import { extractTags } from './tags.js';
 
 const MAX_CONTENT = 20000;
@@ -92,8 +91,18 @@ function clearAuthFailures(clientKey) {
 }
 
 // ---------- 校验 ----------
-function validateCredentials(username, password) {
-  if (!username || username.length > 32) return '用户名需为 1-32 个字符';
+const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/;
+
+function normalizeEmail(email) {
+  return String(email ?? '').trim().toLowerCase();
+}
+
+function validateEmail(email) {
+  if (!email || email.length > 254 || !EMAIL_RE.test(email)) return '请输入正确的邮箱地址';
+  return '';
+}
+
+function validatePassword(password) {
   if (password.length < 6 || password.length > 128) return '密码长度需在 6-128 位之间';
   return '';
 }
@@ -101,7 +110,7 @@ function validateCredentials(username, password) {
 function mapUserRow(row, withStats) {
   const base = {
     id: row.id,
-    username: row.username,
+    email: row.email,
     role: row.role,
     banned: Boolean(row.banned),
     created_at: row.created_at,
@@ -114,39 +123,69 @@ function mapUserRow(row, withStats) {
 async function handleMe(request, env) {
   const auth = await currentUser(env.DB, request);
   if (auth && !auth.banned) {
-    return json({ authenticated: true, username: auth.user.username, role: auth.user.role });
+    return json({ authenticated: true, email: auth.user.email, role: auth.user.role });
   }
   const row = await env.DB.prepare('SELECT COUNT(*) AS c FROM users').first();
   return json({ authenticated: false, hasUsers: row.c > 0 });
 }
 
+// 发送注册验证码
+async function handleRegisterStart(request, env) {
+  const clientKey = await clientKeyOf(request);
+  const retryAfter = authThrottled(clientKey);
+  if (retryAfter > 0) return errorJson(429, '尝试次数过多，请稍后重试');
+
+  const body = await readJsonBody(request);
+  const email = normalizeEmail(body?.email);
+  const invalid = validateEmail(email);
+  if (invalid) return errorJson(400, invalid);
+
+  const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
+  if (existing) return errorJson(409, '该邮箱已注册，请直接登录');
+
+  const result = await sendVerificationCode(env.DB, env, email, 'register');
+  if (result.error) return errorJson(result.status, result.error);
+  const payload = { ok: true };
+  if (result.devCode) payload.devCode = result.devCode; // 仅开发环境
+  return json(payload);
+}
+
+// 校验验证码并完成注册（第一个注册的用户自动成为唯一管理员）
 async function handleRegister(request, env, url, secure) {
   const clientKey = await clientKeyOf(request);
   const retryAfter = authThrottled(clientKey);
   if (retryAfter > 0) return errorJson(429, '尝试次数过多，请稍后重试');
 
   const body = await readJsonBody(request);
-  const username = String(body?.username ?? '').trim();
+  const email = normalizeEmail(body?.email);
+  const code = String(body?.code ?? '').trim();
   const password = String(body?.password ?? '');
-  const invalid = validateCredentials(username, password);
+  const invalid = validateEmail(email) || validatePassword(password);
   if (invalid) return errorJson(400, invalid);
+  if (!/^\d{4}$/.test(code)) return errorJson(400, '请输入 4 位数字验证码');
+
+  const codeOk = await verifyCode(env.DB, email, 'register', code);
+  if (!codeOk) {
+    recordAuthFailure(clientKey);
+    return errorJson(400, '验证码错误或已过期');
+  }
 
   const passwordHash = await hashPassword(password);
   const now = new Date().toISOString();
   // 单条 INSERT...SELECT 原子完成"首个注册用户成为管理员"
   const statement = env.DB.prepare(
-    "INSERT INTO users (username, password_hash, role, created_at) SELECT ?, ?, CASE WHEN (SELECT COUNT(*) FROM users) = 0 THEN 'admin' ELSE 'user' END, ?"
+    "INSERT INTO users (email, password_hash, role, created_at) SELECT ?, ?, CASE WHEN (SELECT COUNT(*) FROM users) = 0 THEN 'admin' ELSE 'user' END, ?"
   );
   let result;
   try {
-    result = await statement.bind(username, passwordHash, now).run();
+    result = await statement.bind(email, passwordHash, now).run();
   } catch {
-    return errorJson(409, '用户名已被占用');
+    return errorJson(409, '该邮箱已注册，请直接登录');
   }
   clearAuthFailures(clientKey);
-  const user = await env.DB.prepare('SELECT id, username, role FROM users WHERE id = ?').bind(result.meta.last_row_id).first();
+  const user = await env.DB.prepare('SELECT id, email, role FROM users WHERE id = ?').bind(result.meta.last_row_id).first();
   const { token, maxAge } = await createSession(env.DB, user.id);
-  return json({ ok: true, username: user.username, role: user.role }, 200, { 'Set-Cookie': sessionCookie(token, maxAge, secure) });
+  return json({ ok: true, email: user.email, role: user.role }, 200, { 'Set-Cookie': sessionCookie(token, maxAge, secure) });
 }
 
 async function handleLogin(request, env, url, secure) {
@@ -155,15 +194,15 @@ async function handleLogin(request, env, url, secure) {
   if (retryAfter > 0) return errorJson(429, '尝试次数过多，请稍后重试');
 
   const body = await readJsonBody(request);
-  const username = String(body?.username ?? '').trim();
+  const email = normalizeEmail(body?.email);
   const password = String(body?.password ?? '');
-  if (!username || !password) return errorJson(400, '请输入账号和密码');
+  if (!email || !password) return errorJson(400, '请输入邮箱和密码');
 
-  const user = await env.DB.prepare('SELECT id, username, password_hash, role, banned FROM users WHERE username = ?').bind(username).first();
+  const user = await env.DB.prepare('SELECT id, email, password_hash, role, banned FROM users WHERE email = ?').bind(email).first();
   if (!user) {
     await dummyVerify(password);
     recordAuthFailure(clientKey);
-    return errorJson(401, '账号或密码不正确');
+    return errorJson(401, '邮箱或密码不正确');
   }
   if (user.banned) {
     recordAuthFailure(clientKey);
@@ -172,11 +211,67 @@ async function handleLogin(request, env, url, secure) {
   const passwordOk = await verifyStoredPassword(password, user.password_hash);
   if (!passwordOk) {
     recordAuthFailure(clientKey);
-    return errorJson(401, '账号或密码不正确');
+    return errorJson(401, '邮箱或密码不正确');
   }
   clearAuthFailures(clientKey);
   const { token, maxAge } = await createSession(env.DB, user.id);
-  return json({ ok: true, username: user.username, role: user.role }, 200, { 'Set-Cookie': sessionCookie(token, maxAge, secure) });
+  return json({ ok: true, email: user.email, role: user.role }, 200, { 'Set-Cookie': sessionCookie(token, maxAge, secure) });
+}
+
+// 发送找回密码验证码（不暴露邮箱是否存在）
+async function handleForgotStart(request, env) {
+  const clientKey = await clientKeyOf(request);
+  const retryAfter = authThrottled(clientKey);
+  if (retryAfter > 0) return errorJson(429, '尝试次数过多，请稍后重试');
+
+  const body = await readJsonBody(request);
+  const email = normalizeEmail(body?.email);
+  const invalid = validateEmail(email);
+  if (invalid) return errorJson(400, invalid);
+
+  const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
+  if (!existing) return json({ ok: true });
+
+  const result = await sendVerificationCode(env.DB, env, email, 'reset');
+  if (result.error) return errorJson(result.status, result.error);
+  const payload = { ok: true };
+  if (result.devCode) payload.devCode = result.devCode; // 仅开发环境
+  return json(payload);
+}
+
+// 校验验证码并重置密码（同时销毁该用户所有会话）
+async function handleReset(request, env, url, secure) {
+  const clientKey = await clientKeyOf(request);
+  const retryAfter = authThrottled(clientKey);
+  if (retryAfter > 0) return errorJson(429, '尝试次数过多，请稍后重试');
+
+  const body = await readJsonBody(request);
+  const email = normalizeEmail(body?.email);
+  const code = String(body?.code ?? '').trim();
+  const password = String(body?.password ?? '');
+  const invalid = validateEmail(email) || validatePassword(password);
+  if (invalid) return errorJson(400, invalid);
+  if (!/^\d{4}$/.test(code)) return errorJson(400, '请输入 4 位数字验证码');
+
+  const user = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
+  // 统一响应，避免暴露邮箱是否存在
+  if (!user) {
+    await dummyVerify(password);
+    return errorJson(400, '验证码错误或已过期');
+  }
+  const codeOk = await verifyCode(env.DB, email, 'reset', code);
+  if (!codeOk) {
+    recordAuthFailure(clientKey);
+    return errorJson(400, '验证码错误或已过期');
+  }
+
+  const passwordHash = await hashPassword(password);
+  await env.DB.batch([
+    env.DB.prepare('UPDATE users SET password_hash = ? WHERE id = ?').bind(passwordHash, user.id),
+    env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(user.id),
+  ]);
+  clearAuthFailures(clientKey);
+  return json({ ok: true });
 }
 
 async function handleLogout(request, env, url, secure) {
@@ -443,7 +538,7 @@ async function exportData(request, env, url, user) {
 // ---------- 管理员：用户管理 ----------
 async function adminListUsers(request, env) {
   const rows = await env.DB
-    .prepare('SELECT u.id, u.username, u.role, u.banned, u.created_at, COUNT(m.id) AS memo_count FROM users u LEFT JOIN memos m ON m.user_id = u.id GROUP BY u.id ORDER BY u.id ASC')
+    .prepare('SELECT u.id, u.email, u.role, u.banned, u.created_at, COUNT(m.id) AS memo_count FROM users u LEFT JOIN memos m ON m.user_id = u.id GROUP BY u.id ORDER BY u.id ASC')
     .all();
   return json({ users: rows.results.map((row) => mapUserRow(row, true)) });
 }
@@ -453,7 +548,7 @@ async function adminGuard(user) {
 }
 
 async function adminBanUser(request, env, user, targetId) {
-  const target = await env.DB.prepare('SELECT id, username, role, banned FROM users WHERE id = ?').bind(targetId).first();
+  const target = await env.DB.prepare('SELECT id, email, role, banned FROM users WHERE id = ?').bind(targetId).first();
   if (!target) return errorJson(404, '用户不存在');
   if (target.role === 'admin' || target.id === user.id) return errorJson(403, '不能封禁管理员账号');
 
@@ -466,7 +561,7 @@ async function adminBanUser(request, env, user, targetId) {
 }
 
 async function adminDeleteUser(env, user, targetId) {
-  const target = await env.DB.prepare('SELECT id, username, role FROM users WHERE id = ?').bind(targetId).first();
+  const target = await env.DB.prepare('SELECT id, email, role FROM users WHERE id = ?').bind(targetId).first();
   if (!target) return errorJson(404, '用户不存在');
   if (target.role === 'admin' || target.id === user.id) return errorJson(403, '不能删除管理员账号');
 
@@ -496,8 +591,11 @@ async function handleApi(request, env, url, secure) {
 
   // 公开接口
   if (method === 'GET' && pathname === '/api/me') return handleMe(request, env);
+  if (method === 'POST' && pathname === '/api/auth/register-start') return handleRegisterStart(request, env);
   if (method === 'POST' && pathname === '/api/auth/register') return handleRegister(request, env, url, secure);
   if (method === 'POST' && pathname === '/api/auth/login') return handleLogin(request, env, url, secure);
+  if (method === 'POST' && pathname === '/api/auth/forgot-start') return handleForgotStart(request, env);
+  if (method === 'POST' && pathname === '/api/auth/reset') return handleReset(request, env, url, secure);
 
   // 写操作做同源校验
   if (method !== 'GET' && !isSameOrigin(request, url)) {
@@ -544,7 +642,6 @@ export default {
   async fetch(request, env) {
     try {
       await ensureSchema(env.DB);
-      await ensureEnvAdmin(env);
       const url = new URL(request.url);
       const secure = url.protocol === 'https:';
       if (url.pathname.startsWith('/api/')) return await handleApi(request, env, url, secure);

@@ -105,13 +105,13 @@ export function clearSessionCookie(secure) {
   return COOKIE_NAME + '=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0' + (secure ? '; Secure' : '');
 }
 
-// 返回：null（无会话/会话失效）| { banned: true }（已封禁）| { user: {id, username, role} }
+// 返回：null（无会话/会话失效）| { banned: true }（已封禁）| { user: {id, email, role} }
 export async function currentUser(db, request) {
   const token = parseCookies(request)[COOKIE_NAME];
   if (!token) return null;
   const tokenHash = await sha256Hex(token);
   const row = await db
-    .prepare('SELECT u.id, u.username, u.role, u.banned, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?')
+    .prepare('SELECT u.id, u.email, u.role, u.banned, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?')
     .bind(tokenHash)
     .first();
   if (!row) return null;
@@ -120,7 +120,7 @@ export async function currentUser(db, request) {
     return null;
   }
   if (row.banned) return { banned: true };
-  return { user: { id: row.id, username: row.username, role: row.role } };
+  return { user: { id: row.id, email: row.email, role: row.role } };
 }
 
 export async function destroySession(db, request) {
@@ -128,19 +128,4 @@ export async function destroySession(db, request) {
   if (!token) return;
   const tokenHash = await sha256Hex(token);
   await db.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run();
-}
-
-// 环境变量配置的管理员账号：仅在系统中尚无管理员时播种一次（保证"只有一个管理员"）
-let envAdminChecked = false;
-export async function ensureEnvAdmin(env) {
-  if (envAdminChecked) return;
-  envAdminChecked = true;
-  if (!env.AUTH_USERNAME || !env.AUTH_PASSWORD) return;
-  const admin = await env.DB.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").first();
-  if (admin) return;
-  const passwordHash = await hashPassword(env.AUTH_PASSWORD);
-  await env.DB
-    .prepare("INSERT OR IGNORE INTO users (username, password_hash, role, created_at) VALUES (?, ?, 'admin', ?)")
-    .bind(env.AUTH_USERNAME, passwordHash, new Date().toISOString())
-    .run();
 }

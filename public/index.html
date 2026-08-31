@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body>
-  <!-- 登录 / 注册视图 -->
+  <!-- 登录 / 注册 / 找回密码视图 -->
   <div id="auth-view" class="auth-view hidden">
     <div class="auth-card">
       <div class="auth-brand">
@@ -22,12 +22,13 @@
       <div id="auth-tabs" class="auth-tabs">
         <button type="button" class="auth-tab active" data-tab="login">登录</button>
         <button type="button" class="auth-tab" data-tab="register">注册</button>
+        <button type="button" class="auth-tab" data-tab="reset">找回密码</button>
       </div>
 
       <form id="login-form" autocomplete="on">
         <label class="field">
-          <span>账号</span>
-          <input type="text" id="login-username" name="username" autocomplete="username" required maxlength="32">
+          <span>邮箱</span>
+          <input type="email" id="login-email" name="email" autocomplete="email" required>
         </label>
         <label class="field">
           <span>密码</span>
@@ -40,8 +41,15 @@
       <form id="register-form" class="hidden" autocomplete="off">
         <p id="register-hint" class="setup-hint hidden">🎉 你是第一位注册的用户，将自动成为本站管理员</p>
         <label class="field">
-          <span>账号</span>
-          <input type="text" id="register-username" maxlength="32" required>
+          <span>邮箱</span>
+          <input type="email" id="register-email" required>
+        </label>
+        <label class="field">
+          <span>邮箱验证码</span>
+          <span class="code-row">
+            <input type="text" id="register-code" inputmode="numeric" maxlength="4" placeholder="4 位数字" required>
+            <button type="button" id="register-send" class="btn btn-ghost send-btn">发送验证码</button>
+          </span>
         </label>
         <label class="field">
           <span>密码（至少 6 位）</span>
@@ -53,6 +61,27 @@
         </label>
         <p id="register-error" class="form-error hidden"></p>
         <button type="submit" class="btn btn-primary btn-block">注册并进入</button>
+      </form>
+
+      <form id="reset-form" class="hidden" autocomplete="off">
+        <p class="setup-hint">输入注册邮箱，我们会发送 4 位数字验证码用于重置密码。</p>
+        <label class="field">
+          <span>邮箱</span>
+          <input type="email" id="reset-email" required>
+        </label>
+        <label class="field">
+          <span>邮箱验证码</span>
+          <span class="code-row">
+            <input type="text" id="reset-code" inputmode="numeric" maxlength="4" placeholder="4 位数字" required>
+            <button type="button" id="reset-send" class="btn btn-ghost send-btn">发送验证码</button>
+          </span>
+        </label>
+        <label class="field">
+          <span>新密码（至少 6 位）</span>
+          <input type="password" id="reset-password" minlength="6" maxlength="128" required>
+        </label>
+        <p id="reset-error" class="form-error hidden"></p>
+        <button type="submit" class="btn btn-primary btn-block">重置密码</button>
       </form>
     </div>
     <p class="auth-footer">Flomemos · 私有部署 · 运行于 Cloudflare Workers</p>

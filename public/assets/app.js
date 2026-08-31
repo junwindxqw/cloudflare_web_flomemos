@@ -7,7 +7,7 @@ import { MarkdownEditor } from './editor.js';
 const $ = (sel) => document.querySelector(sel);
 
 const state = {
-  username: '',
+  email: '',
   role: 'user',
   view: 'all', // all | pinned | tag
   tag: '',
@@ -70,12 +70,15 @@ function handleActionError(err) {
 }
 
 // ---------------- 视图切换 ----------------
+const AUTH_FORMS = { login: 'login-form', register: 'register-form', reset: 'reset-form' };
+
 function setAuthTab(mode) {
   document.querySelectorAll('.auth-tab').forEach((b) => {
     b.classList.toggle('active', b.dataset.tab === mode);
   });
-  $('#login-form').classList.toggle('hidden', mode !== 'login');
-  $('#register-form').classList.toggle('hidden', mode !== 'register');
+  for (const [tab, formId] of Object.entries(AUTH_FORMS)) {
+    $('#' + formId).classList.toggle('hidden', tab !== mode);
+  }
 }
 
 function showAuth(opts = {}) {
@@ -85,14 +88,13 @@ function showAuth(opts = {}) {
   $('#auth-tabs').classList.toggle('hidden', opts.hideTabs);
   setAuthTab(mode);
   $('#register-hint').classList.toggle('hidden', !opts.showAdminHint);
-  const errEl = mode === 'register' ? $('#register-error') : $('#login-error');
-  $('#login-error').classList.add('hidden');
-  $('#register-error').classList.add('hidden');
+  for (const id of ['login-error', 'register-error', 'reset-error']) $('#' + id).classList.add('hidden');
   if (opts.message) {
-    errEl.textContent = opts.message;
-    errEl.classList.remove('hidden');
+    const errSel = mode === 'login' ? '#login-error' : mode === 'register' ? '#register-error' : '#reset-error';
+    $(errSel).textContent = opts.message;
+    $(errSel).classList.remove('hidden');
   }
-  (mode === 'register' ? $('#register-username') : $('#login-username')).focus();
+  $(mode === 'login' ? '#login-email' : mode === 'register' ? '#register-email' : '#reset-email').focus();
 }
 
 function showMain() {
@@ -102,7 +104,7 @@ function showMain() {
 }
 
 function enterApp(user) {
-  state.username = user.username;
+  state.email = user.email;
   state.role = user.role || 'user';
   $('#nav-admin').classList.toggle('hidden', state.role !== 'admin');
   renderSideUser();
@@ -120,7 +122,8 @@ function renderSideUser() {
   icon.textContent = state.role === 'admin' ? '👑' : '👤';
   const name = document.createElement('span');
   name.className = 'side-user-name';
-  name.textContent = state.username;
+  name.textContent = state.email;
+  name.title = state.email;
   const badge = document.createElement('span');
   badge.className = 'role-badge' + (state.role === 'admin' ? ' role-admin' : '');
   badge.textContent = state.role === 'admin' ? '管理员' : '成员';
@@ -142,7 +145,7 @@ async function boot() {
   applyTheme(localStorage.getItem('fm-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
   try {
     const me = await api('/api/me');
-    if (me.authenticated) enterApp({ username: me.username, role: me.role });
+    if (me.authenticated) enterApp({ email: me.email, role: me.role });
     else showAuth({ mode: me.hasUsers ? 'login' : 'register', hideTabs: !me.hasUsers, showAdminHint: !me.hasUsers });
   } catch (err) {
     showAuth({ mode: 'login' });
@@ -150,50 +153,116 @@ async function boot() {
   }
 }
 
-// ---------------- 登录 / 注册 ----------------
+// ---------------- 登录 / 注册 / 找回密码 ----------------
+function showAuthError(form, message) {
+  const errEl = $('#' + form + '-error');
+  errEl.textContent = message;
+  errEl.classList.remove('hidden');
+}
+
+function startCountdown(btn) {
+  let left = 60;
+  btn.disabled = true;
+  btn.textContent = left + ' 秒';
+  const timer = setInterval(() => {
+    left -= 1;
+    if (left <= 0) {
+      clearInterval(timer);
+      btn.disabled = false;
+      btn.textContent = '发送验证码';
+    } else {
+      btn.textContent = left + ' 秒';
+    }
+  }, 1000);
+}
+
+async function sendAuthCode(kind) {
+  const btn = $('#' + kind + '-send');
+  const email = $('#' + kind + '-email').value.trim();
+  if (btn.disabled) return;
+  if (!email || email.indexOf('@') === -1) {
+    toast('请输入正确的邮箱地址', 'error');
+    return;
+  }
+  btn.disabled = true;
+  try {
+    const path = kind === 'register' ? '/api/auth/register-start' : '/api/auth/forgot-start';
+    const res = await api(path, { method: 'POST', body: { email } });
+    startCountdown(btn);
+    if (res.devCode) {
+      $('#' + kind + '-code').value = res.devCode;
+      toast('开发模式：验证码 ' + res.devCode);
+    } else {
+      toast('验证码已发送，请查收邮箱（也检查一下垃圾邮件）');
+    }
+  } catch (err) {
+    btn.disabled = false;
+    toast(err.message, 'error');
+  }
+}
+
 function bindAuthForms() {
   document.querySelectorAll('.auth-tab').forEach((b) => {
     b.addEventListener('click', () => {
-      showAuth({ mode: b.dataset.tab, showAdminHint: !$('#register-hint').classList.contains('hidden') && b.dataset.tab === 'register' });
+      const hintShown = !$('#register-hint').classList.contains('hidden');
+      showAuth({ mode: b.dataset.tab, showAdminHint: hintShown });
     });
   });
 
+  $('#register-send').addEventListener('click', () => sendAuthCode('register'));
+  $('#reset-send').addEventListener('click', () => sendAuthCode('reset'));
+
   $('#login-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const errEl = $('#login-error');
-    errEl.classList.add('hidden');
     try {
       const res = await api('/api/auth/login', {
         method: 'POST',
-        body: { username: $('#login-username').value.trim(), password: $('#login-password').value },
+        body: { email: $('#login-email').value.trim(), password: $('#login-password').value },
       });
-      enterApp({ username: res.username, role: res.role });
+      enterApp({ email: res.email, role: res.role });
     } catch (err) {
-      errEl.textContent = err.message;
-      errEl.classList.remove('hidden');
+      showAuthError('login', err.message);
     }
   });
 
   $('#register-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const errEl = $('#register-error');
-    errEl.classList.add('hidden');
     const password = $('#register-password').value;
     if (password !== $('#register-password2').value) {
-      errEl.textContent = '两次输入的密码不一致';
-      errEl.classList.remove('hidden');
+      showAuthError('register', '两次输入的密码不一致');
       return;
     }
     try {
       const res = await api('/api/auth/register', {
         method: 'POST',
-        body: { username: $('#register-username').value.trim(), password },
+        body: {
+          email: $('#register-email').value.trim(),
+          code: $('#register-code').value.trim(),
+          password,
+        },
       });
-      enterApp({ username: res.username, role: res.role });
+      enterApp({ email: res.email, role: res.role });
       toast(res.role === 'admin' ? '欢迎，管理员 🎉' : '注册成功，开始记录吧 ✨');
     } catch (err) {
-      errEl.textContent = err.message;
-      errEl.classList.remove('hidden');
+      showAuthError('register', err.message);
+    }
+  });
+
+  $('#reset-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      await api('/api/auth/reset', {
+        method: 'POST',
+        body: {
+          email: $('#reset-email').value.trim(),
+          code: $('#reset-code').value.trim(),
+          password: $('#reset-password').value,
+        },
+      });
+      showAuth({ mode: 'login', message: '密码已重置，请使用新密码登录' });
+      toast('密码已重置 ✅');
+    } catch (err) {
+      showAuthError('reset', err.message);
     }
   });
 }
@@ -691,7 +760,7 @@ function renderUserRow(u) {
   info.className = 'admin-user-info';
   const name = document.createElement('span');
   name.className = 'admin-user-name';
-  name.textContent = u.username;
+  name.textContent = u.email;
   info.appendChild(name);
 
   const role = document.createElement('span');
@@ -741,18 +810,18 @@ async function toggleBan(u) {
     const res = await api('/api/admin/users/' + u.id + '/ban', { method: 'POST', body: { banned: !u.banned } });
     u.banned = res.banned;
     loadUsers();
-    toast(u.banned ? '已封禁 ' + u.username : '已解封 ' + u.username);
+    toast(u.banned ? '已封禁 ' + u.email : '已解封 ' + u.email);
   } catch (err) {
     handleActionError(err);
   }
 }
 
 async function deleteUser(u) {
-  if (!confirm('确定删除用户「' + u.username + '」吗？\n其全部笔记与图片将一并删除，不可恢复。')) return;
+  if (!confirm('确定删除用户「' + u.email + '」吗？\n其全部笔记与图片将一并删除，不可恢复。')) return;
   try {
     await api('/api/admin/users/' + u.id, { method: 'DELETE' });
     loadUsers();
-    toast('已删除用户 ' + u.username);
+    toast('已删除用户 ' + u.email);
   } catch (err) {
     handleActionError(err);
   }

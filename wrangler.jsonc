@@ -22,7 +22,6 @@
     }
   ],
   "vars": {
-    "AUTH_USERNAME": "",
-    "AUTH_PASSWORD": ""
+    "MAIL_FROM": ""
   }
 }
