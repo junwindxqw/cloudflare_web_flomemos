@@ -22,6 +22,6 @@
     }
   ],
   "vars": {
-    "MAIL_FROM": ""
+    "MAIL_FROM": "Flomemos <noreply@junwind.site>"
   }
 }
