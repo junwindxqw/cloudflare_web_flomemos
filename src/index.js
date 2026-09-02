@@ -1082,6 +1082,7 @@ async function adminDeleteUser(env, user, targetId) {
 async function handleApi(request, env, url, secure) {
   const { method } = request;
   const { pathname } = url;
+  console.log('[handleApi]', method, pathname);
 
   // 公开接口
   if (method === 'GET' && pathname === '/api/me') return handleMe(request, env);
@@ -1178,7 +1179,8 @@ export default {
     const start = Date.now();
     let status = 500;
     try {
-      await ensureSchema(env.DB);
+      // ensureSchema 异步后台跑；不阻塞请求
+      ensureSchema(env.DB);
       const url = new URL(request.url);
       const secure = isSecureRequest(request, url);
       // /api/* 由本 Worker 处理

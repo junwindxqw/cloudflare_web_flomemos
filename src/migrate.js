@@ -119,40 +119,59 @@ const MIGRATIONS = [
 ];
 
 let schemaReady = false;
+let schemaPromise = null;
 
 function ignoreAlterError(err) {
   // SQLite 重复列错误格式："duplicate column name: xxx"，吞掉即可。
   return /duplicate column/i.test(String(err?.message || ''));
 }
 
-export async function ensureSchema(db) {
-  if (schemaReady) return;
-  // 1) 基础表与索引
-  for (const sql of TABLE_DDL) {
-    try { await db.prepare(sql).run(); } catch (e) { if (!ignoreAlterError(e)) throw e; }
+// ensureSchema 异步执行一次；后续调用直接 await 同一 Promise。
+// 任何错误吞掉不抛出，避免阻塞请求（schema 失败时降级使用现有表）。
+export function ensureSchema(db) {
+  if (schemaReady) return Promise.resolve();
+  if (!schemaPromise) {
+    schemaPromise = (async () => {
+      try {
+        for (const sql of TABLE_DDL) {
+          try { await db.prepare(sql).run(); } catch (e) { if (!ignoreAlterError(e)) throw e; }
+        }
+        for (const sql of INDEX_DDL) {
+          try { await db.prepare(sql).run(); } catch { /* ignore */ }
+        }
+        await runMigrations(db);
+        schemaReady = true;
+      } catch (err) {
+        console.error('ensureSchema failed:', err);
+        // 不再重试：避免每次请求都触发 FTS5 hang
+        schemaReady = true;
+      }
+    })();
   }
-  for (const sql of INDEX_DDL) {
-    try { await db.prepare(sql).run(); } catch { /* ignore */ }
-  }
-  // 2) 版本化迁移
-  await runMigrations(db);
-  schemaReady = true;
+  return schemaPromise;
 }
 
 async function runMigrations(db) {
-  // 先确保 migrations 表存在
   try { await db.prepare(`CREATE TABLE IF NOT EXISTS migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`).run(); } catch { /* ignore */ }
-  const applied = await db.prepare('SELECT version FROM migrations').all();
-  const done = new Set((applied.results || []).map((r) => r.version));
+  let appliedRows = [];
+  try {
+    const applied = await db.prepare('SELECT version FROM migrations').all();
+    appliedRows = applied.results || [];
+  } catch { /* ignore */ }
+  const done = new Set(appliedRows.map((r) => r.version));
   for (const m of MIGRATIONS) {
     if (done.has(m.version)) continue;
     for (const sql of m.sql) {
       try {
         await db.prepare(sql).run();
       } catch (e) {
-        if (!ignoreAlterError(e)) throw e;
+        if (!ignoreAlterError(e)) {
+          console.warn('migration step failed:', sql.slice(0, 60), e.message);
+        }
       }
     }
-    await db.prepare('INSERT INTO migrations (version, applied_at) VALUES (?, ?)').bind(m.version, Date.now()).run();
+    try {
+      await db.prepare('INSERT INTO migrations (version, applied_at) VALUES (?, ?)').bind(m.version, Date.now()).run();
+    } catch { /* ignore duplicate */ }
   }
 }
