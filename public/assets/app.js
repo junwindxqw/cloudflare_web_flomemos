@@ -392,12 +392,20 @@ async function loadMore() {
       renderMemoList();
       return;
     }
+    // 搜索走 FTS5 专用端点（相关性排序 + 服务端 snippet）
+    if (state.q) {
+      const res = await api('/api/search?q=' + encodeURIComponent(state.q) + '&limit=50');
+      state.memos = res.memos;
+      state.hasMore = false;
+      state.nextBefore = 0;
+      renderMemoList();
+      return;
+    }
     const params = new URLSearchParams();
     params.set('limit', '20');
     if (state.nextBefore) params.set('before', String(state.nextBefore));
     if (state.view === 'pinned') params.set('pinned', '1');
     if (state.view === 'tag' && state.tag) params.set('tag', state.tag);
-    if (state.q) params.set('q', state.q);
 
     const res = await api('/api/memos?' + params.toString());
     state.memos = state.memos.concat(res.memos);
@@ -487,6 +495,7 @@ function renderMemoCard(memo) {
   const body = document.createElement('div');
   body.className = 'memo-content md-body';
   body.innerHTML = renderMemoHtml(memo.content);
+  if (state.q) highlightMatches(body, state.q);
   card.appendChild(body);
 
   const meta = document.createElement('div');
@@ -554,6 +563,37 @@ function actionBtn(icon, title, onClick) {
   b.setAttribute('aria-label', title);
   b.addEventListener('click', onClick);
   return b;
+}
+
+// 搜索命中高亮：遍历文本节点，把 q 的出现处包上 <mark>（跳过代码/链接/已有标记）
+function highlightMatches(rootEl, q) {
+  const needle = q.toLowerCase();
+  if (!needle) return;
+  const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent || parent.closest('pre, code, a, .fm-tag, mark')) return NodeFilter.FILTER_REJECT;
+      return node.nodeValue.toLowerCase().includes(needle) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const targets = [];
+  while (walker.nextNode()) targets.push(walker.currentNode);
+  for (const textNode of targets) {
+    const text = textNode.nodeValue;
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    let idx = text.toLowerCase().indexOf(needle);
+    while (idx !== -1) {
+      if (idx > last) frag.appendChild(document.createTextNode(text.slice(last, idx)));
+      const mark = document.createElement('mark');
+      mark.textContent = text.slice(idx, idx + needle.length);
+      frag.appendChild(mark);
+      last = idx + needle.length;
+      idx = text.toLowerCase().indexOf(needle, last);
+    }
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    textNode.parentNode.replaceChild(frag, textNode);
+  }
 }
 
 // ---------------- 笔记操作 ----------------

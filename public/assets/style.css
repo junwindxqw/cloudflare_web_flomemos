@@ -635,6 +635,15 @@ input, textarea {
 }
 .fm-tag:hover { background: var(--accent-weak); }
 
+/* 搜索命中高亮 */
+.md-body mark {
+  background: rgba(255, 213, 79, 0.45);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+[data-theme="dark"] .md-body mark { background: rgba(255, 213, 79, 0.28); }
+
 /* ---------- 弹窗 ---------- */
 .modal {
   position: fixed;

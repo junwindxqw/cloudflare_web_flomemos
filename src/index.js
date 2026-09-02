@@ -540,21 +540,34 @@ async function randomMemos(request, env, url, user) {
   const params = url.searchParams;
   const limit = Math.min(Math.max(Number.parseInt(params.get('limit'), 10) || 5, 1), 10);
   const tag = (params.get('tag') || '').slice(0, 100);
+  const tagCond = 'm.id IN (SELECT t.memo_id FROM tags t WHERE t.tag = ? AND t.memo_id IN (SELECT id FROM memos WHERE user_id = ?))';
+
+  // 快路径：random_bucket 把扫描范围缩到 ~1% 的行；大数据集下避免全表 ORDER BY RANDOM()
   const bucket = Math.floor(Math.random() * 100);
-  const conditions = ['m.user_id = ?', 'm.deleted_at IS NULL', 'm.random_bucket = ?'];
-  const binds = [user.id, bucket];
-  if (tag) {
-    conditions.push('m.id IN (SELECT t.memo_id FROM tags t WHERE t.tag = ? AND t.memo_id IN (SELECT id FROM memos WHERE user_id = ?))');
-    binds.push(tag, user.id);
-  }
-  const whereSql = conditions.join(' AND ');
+  const bucketConds = ['m.user_id = ?', 'm.deleted_at IS NULL', 'm.random_bucket = ?'];
+  const bucketBinds = [user.id, bucket];
+  if (tag) { bucketConds.push(tagCond); bucketBinds.push(tag, user.id); }
   const rows = await env.DB
-    .prepare('SELECT m.* FROM memos m WHERE ' + whereSql + ' ORDER BY RANDOM() LIMIT ?')
-    .bind(...binds, limit)
+    .prepare('SELECT m.* FROM memos m WHERE ' + bucketConds.join(' AND ') + ' ORDER BY RANDOM() LIMIT ?')
+    .bind(...bucketBinds, limit)
     .all();
-  await attachTags(env.DB, rows.results);
-  await attachShared(env.DB, rows.results, user.id);
-  return json({ memos: rows.results.map(mapMemo) });
+
+  // 回退：桶内命中不足（笔记少或被标签过滤），退回全量随机——小数据集本就廉价
+  let results = rows.results;
+  if (results.length < limit) {
+    const conds = ['m.user_id = ?', 'm.deleted_at IS NULL'];
+    const binds = [user.id];
+    if (tag) { conds.push(tagCond); binds.push(tag, user.id); }
+    const fallback = await env.DB
+      .prepare('SELECT m.* FROM memos m WHERE ' + conds.join(' AND ') + ' ORDER BY RANDOM() LIMIT ?')
+      .bind(...binds, limit)
+      .all();
+    results = fallback.results;
+  }
+
+  await attachTags(env.DB, results);
+  await attachShared(env.DB, results, user.id);
+  return json({ memos: results.map(mapMemo) });
 }
 
 async function listTrash(request, env, user) {
