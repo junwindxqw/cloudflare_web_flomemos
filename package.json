@@ -11,7 +11,8 @@
     "db:init-local": "wrangler d1 execute flomemos --local --file=./schema.sql",
     "db:init-remote": "wrangler d1 execute flomemos --remote --file=./schema.sql",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "capture": "node scripts/capture.mjs"
   },
   "keywords": [
     "flomo",
@@ -25,10 +26,9 @@
   ],
   "license": "MIT",
   "devDependencies": {
+    "jsdom": "^30.0.1",
+    "puppeteer-core": "^25.9.0",
     "vitest": "^2.1.0",
     "wrangler": "^4.0.0"
-  },
-  "dependencies": {
-    "jsdom": "^30.0.1"
   }
 }

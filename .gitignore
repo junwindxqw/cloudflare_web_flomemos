@@ -8,7 +8,5 @@ node_modules/
 .t.json
 .t-*
 .zcode/
-docs/screenshots/*.png
-!docs/screenshots/.gitkeep
 test-results/
 playwright-report/

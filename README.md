@@ -25,6 +25,14 @@ Workers + D1 + R2 · 零服务器运维 · 一键部署 · 完全属于你自己
 > 💡 **为什么选择 Workers 而不是 Pages？**
 > Cloudflare 官方已推荐新项目使用 Workers 静态资产（Static Assets）替代 Pages。Flomemos 用**一个 Worker** 同时承载前端页面与 API，配置更简单，免费额度也更充裕。
 
+## 📸 界面一览
+
+| 笔记流 | 统计面板 |
+| --- | --- |
+| ![笔记流](docs/screenshots/02-list.png) | ![统计](docs/screenshots/03-stats.png) |
+
+*更多截图（回顾 / 搜索高亮 / 预览）见 [docs/screenshots](docs/screenshots/)，由 `npm run capture` 一键生成。*
+
 ## 🎯 功能特性
 
 ### 🖊 增强型 Markdown 编辑器
