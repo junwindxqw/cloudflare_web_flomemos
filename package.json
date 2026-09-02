@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "node -e \"fs.rmSync('public/.mimosa',{recursive:true,force:true})\" && wrangler deploy",
     "tail": "wrangler tail",
     "db:init-local": "wrangler d1 execute flomemos --local --file=./schema.sql",
     "db:init-remote": "wrangler d1 execute flomemos --remote --file=./schema.sql",
