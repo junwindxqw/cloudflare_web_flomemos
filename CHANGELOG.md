@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 修复
+- 图片上传必定失败（`Failed to construct 'Response'`）：XHR 上传把 `getAllResponseHeaders()` 的原始字符串直接传给了 `Response` 构造器，现解析为 `Headers`；顺带补上 status 0 / 中断时的友好错误
+
 ### 修复（复查轮）
 - 首屏偶现「没有找到与『』相关的笔记」：搜索状态初始化错误导致首次加载误入搜索分支
 - 自动保存草稿此前未生效：编辑器漏接 onChange 回调

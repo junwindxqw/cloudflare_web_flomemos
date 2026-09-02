@@ -44,13 +44,21 @@ function xhrUpload(path, form, onProgress) {
     };
     xhr.onload = () => {
       try {
-        const res = new Response(xhr.responseText, { status: xhr.status, headers: xhr.getAllResponseHeaders() });
-        resolve(parseResponse(res));
+        // status 0：请求被中断/网络层失败，Response 构造器不接受
+        if (!xhr.status) throw new ApiError('网络请求失败，请检查连接', 0);
+        // getAllResponseHeaders() 返回 "a: 1\r\nb: 2" 原始字符串，需解析成 Headers 才能传给 Response
+        const headers = new Headers();
+        for (const line of xhr.getAllResponseHeaders().trim().split(/[\r\n]+/)) {
+          const i = line.indexOf(':');
+          if (i > 0) headers.append(line.slice(0, i).trim(), line.slice(i + 1).trim());
+        }
+        resolve(parseResponse(new Response(xhr.responseText, { status: xhr.status, headers })));
       } catch (e) {
         reject(e);
       }
     };
     xhr.onerror = () => reject(new ApiError('网络请求失败，请检查连接', 0));
+    xhr.onabort = () => reject(new ApiError('网络请求失败，请检查连接', 0));
     xhr.send(form);
   });
 }
