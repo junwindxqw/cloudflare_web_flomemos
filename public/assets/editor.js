@@ -246,6 +246,8 @@ export class MarkdownEditor {
   updateCount() {
     const len = [...this.input.value].length;
     this.counter.textContent = len + ' 字';
+    this.counter.classList.toggle('warn', len >= 18000 && len < 19500);
+    this.counter.classList.toggle('danger', len >= 19500);
   }
 
   // ---------- 预览 ----------
@@ -418,9 +420,20 @@ export class MarkdownEditor {
       this.hint.textContent = '未启用图片上传';
       return;
     }
+    this.hint.textContent = '正在处理图片…';
+    let toUpload = file;
+    try {
+      toUpload = await compressImageIfNeeded(file);
+    } catch (e) {
+      // 压缩失败时直接上传原图
+      toUpload = file;
+    }
     this.hint.textContent = '正在上传图片…';
     try {
-      const url = await this.opts.uploadImage(file);
+      const url = await this.opts.uploadImage(toUpload, (ratio) => {
+        const pct = Math.round(ratio * 100);
+        this.hint.textContent = '正在上传图片… ' + pct + '%';
+      });
       this.hint.textContent = '';
       this.insertAtCursor('![' + (file.name || '图片') + '](' + url + ')');
     } catch (err) {
@@ -519,9 +532,16 @@ export class MarkdownEditor {
       return;
     }
     const lower = info.word.toLowerCase();
-    const items = this.opts.getTags()
-      .filter((t) => t.toLowerCase().includes(lower) && t.toLowerCase() !== lower)
-      .slice(0, 8);
+    const all = this.opts.getTags();
+    const starts = [];
+    const includes = [];
+    for (const t of all) {
+      const tl = t.toLowerCase();
+      if (tl === lower) continue;
+      if (tl.startsWith(lower)) starts.push(t);
+      else if (tl.includes(lower)) includes.push(t);
+    }
+    const items = starts.concat(includes).slice(0, 8);
     if (!items.length) {
       this.closeSuggest();
       return;
@@ -565,4 +585,44 @@ export class MarkdownEditor {
     this.suggest.open = false;
     this.suggestBox.classList.add('hidden');
   }
+}
+
+// 客户端图片压缩：长边 > 1600 或体积 > 1MB 时压缩到 1600px / JPEG 0.85
+async function compressImageIfNeeded(file) {
+  if (!file.type || !file.type.startsWith('image/')) return file;
+  if (file.type === 'image/gif') return file; // 保留动图
+  if (file.size <= 1024 * 1024) return file; // <1MB 不压
+
+  const img = await loadImage(file);
+  const maxSide = 1600;
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
+  if (w <= maxSide && h <= maxSide && file.size <= 2 * 1024 * 1024) return file;
+
+  const ratio = Math.min(1, maxSide / Math.max(w, h));
+  const tw = Math.round(w * ratio);
+  const th = Math.round(h * ratio);
+  const canvas = document.createElement('canvas');
+  canvas.width = tw;
+  canvas.height = th;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, 0, 0, tw, th);
+
+  // 输出 JPEG；若原图带 alpha，则改 PNG
+  const outType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, outType, outType === 'image/jpeg' ? 0.85 : undefined));
+  if (!blob || blob.size >= file.size) return file;
+  const newName = (file.name || 'image').replace(/\.(png|jpg|jpeg|webp|avif)$/i, outType === 'image/jpeg' ? '.jpg' : '.png');
+  return new File([blob], newName, { type: outType, lastModified: Date.now() });
+}
+
+function loadImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
+    img.src = url;
+  });
 }
