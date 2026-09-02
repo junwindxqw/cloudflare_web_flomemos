@@ -27,5 +27,8 @@
   "devDependencies": {
     "vitest": "^2.1.0",
     "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "jsdom": "^30.0.1"
   }
 }
