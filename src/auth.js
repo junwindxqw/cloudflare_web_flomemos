@@ -1,6 +1,7 @@
 // 认证：PBKDF2 密码散列 + D1 会话令牌（Cookie 记录原始令牌，库里只存 SHA-256）。
-// 免费版 Workers 有 10ms CPU 限额，PBKDF2 迭代次数在安全性与限额间取 30000。
-const PBKDF2_ITERATIONS = 30000;
+// PBKDF2 迭代在新写入时使用 20000（旧 30000 哈希仍可被 verifyStoredPassword 校验）；
+// Workers Free CPU 上限 10ms，20000 在登录路径留出余量。
+const PBKDF2_ITERATIONS = 20000;
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const COOKIE_NAME = 'fm_session';
 
@@ -73,8 +74,9 @@ export function parseCookies(request) {
   const cookies = {};
   for (const part of header.split(';')) {
     const idx = part.indexOf('=');
-    if (idx === -1) continue;
+    if (idx <= 0) continue; // 跳过空名或无 '=' 的段
     const name = part.slice(0, idx).trim();
+    if (!name) continue;
     try {
       cookies[name] = decodeURIComponent(part.slice(idx + 1).trim());
     } catch {
@@ -84,14 +86,26 @@ export function parseCookies(request) {
   return cookies;
 }
 
-export async function createSession(db, userId) {
+// 从请求中提取最小化的设备指纹：IP 前 16 位 + UA 首 80 字符
+export function extractDeviceFingerprint(request) {
+  const ip = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Real-IP') || '';
+  const ipPrefix = ip.split('.').slice(0, 3).join('.');
+  const ua = (request.headers.get('User-Agent') || '').slice(0, 80);
+  return { ipPrefix, userAgent: ua };
+}
+
+export async function createSession(db, userId, request) {
   const token = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
   const tokenHash = await sha256Hex(token);
-  const expiresAt = Date.now() + SESSION_TTL_SECONDS * 1000;
-  await db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').bind(tokenHash, userId, expiresAt).run();
+  const now = Date.now();
+  const expiresAt = now + SESSION_TTL_SECONDS * 1000;
+  const fp = extractDeviceFingerprint(request || { headers: new Headers() });
+  await db.prepare(
+    'INSERT INTO sessions (token_hash, user_id, expires_at, created_at, last_used_at, user_agent, ip_prefix) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).bind(tokenHash, userId, expiresAt, now, now, fp.userAgent, fp.ipPrefix).run();
   // 顺手清理过期会话（约 5% 概率触发，避免堆积）
   if (Math.random() < 0.05) {
-    await db.prepare('DELETE FROM sessions WHERE expires_at < ?').bind(Date.now()).run();
+    await db.prepare('DELETE FROM sessions WHERE expires_at < ?').bind(now).run();
   }
   return { token, maxAge: SESSION_TTL_SECONDS };
 }
@@ -105,13 +119,14 @@ export function clearSessionCookie(secure) {
   return COOKIE_NAME + '=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0' + (secure ? '; Secure' : '');
 }
 
-// 返回：null（无会话/会话失效）| { banned: true }（已封禁）| { user: {id, email, role} }
+// 返回：null（无会话/会话失效）| { banned: true }（已封禁）| { user: {id, email, role}, sessionId }
 export async function currentUser(db, request) {
-  const token = parseCookies(request)[COOKIE_NAME];
+  const cookies = parseCookies(request);
+  const token = cookies[COOKIE_NAME];
   if (!token) return null;
   const tokenHash = await sha256Hex(token);
   const row = await db
-    .prepare('SELECT u.id, u.email, u.role, u.banned, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?')
+    .prepare('SELECT u.id, u.email, u.role, u.banned, s.token_hash, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?')
     .bind(tokenHash)
     .first();
   if (!row) return null;
@@ -119,8 +134,13 @@ export async function currentUser(db, request) {
     await db.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run();
     return null;
   }
+  // 更新 last_used_at（节流：> 5 分钟才写一次，避免高频写）
+  const now = Date.now();
+  if (!row.last_used_at || now - (row.last_used_at || 0) > 5 * 60 * 1000) {
+    await db.prepare('UPDATE sessions SET last_used_at = ? WHERE token_hash = ?').bind(now, tokenHash).run();
+  }
   if (row.banned) return { banned: true };
-  return { user: { id: row.id, email: row.email, role: row.role } };
+  return { user: { id: row.id, email: row.email, role: row.role }, tokenHash };
 }
 
 export async function destroySession(db, request) {
@@ -128,4 +148,30 @@ export async function destroySession(db, request) {
   if (!token) return;
   const tokenHash = await sha256Hex(token);
   await db.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run();
+}
+
+// 列出当前用户的所有活跃会话（设备列表）
+export async function listSessions(db, userId, currentTokenHash) {
+  const rows = await db
+    .prepare('SELECT token_hash, created_at, last_used_at, user_agent, ip_prefix FROM sessions WHERE user_id = ? AND expires_at > ? ORDER BY last_used_at DESC')
+    .bind(userId, Date.now())
+    .all();
+  return (rows.results || []).map((r) => ({
+    id: r.token_hash,
+    is_current: r.token_hash === currentTokenHash,
+    created_at: r.created_at ? new Date(r.created_at).toISOString() : null,
+    last_used_at: r.last_used_at ? new Date(r.last_used_at).toISOString() : null,
+    user_agent: r.user_agent || '',
+    ip_prefix: r.ip_prefix || '',
+  }));
+}
+
+// 删除单个会话（仅能删自己的）
+export async function revokeSession(db, userId, tokenHash) {
+  await db.prepare('DELETE FROM sessions WHERE token_hash = ? AND user_id = ?').bind(tokenHash, userId).run();
+}
+
+// 删除当前用户除传入 token 之外的全部会话
+export async function revokeOtherSessions(db, userId, keepTokenHash) {
+  await db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').bind(userId, keepTokenHash).run();
 }

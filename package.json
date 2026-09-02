@@ -1,7 +1,7 @@
 {
   "name": "flomemos",
-  "version": "1.0.0",
-  "description": "Flomemos — flomo 风格的单用户云端笔记便签，跑在 Cloudflare Workers 免费服务上",
+  "version": "1.1.0",
+  "description": "Flomemos — flomo 风格的轻量级笔记应用，部署在 Cloudflare 免费档（Workers + D1 + R2）",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,7 +9,9 @@
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
     "db:init-local": "wrangler d1 execute flomemos --local --file=./schema.sql",
-    "db:init-remote": "wrangler d1 execute flomemos --remote --file=./schema.sql"
+    "db:init-remote": "wrangler d1 execute flomemos --remote --file=./schema.sql",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [
     "flomo",
@@ -18,10 +20,12 @@
     "cloudflare",
     "workers",
     "d1",
-    "r2"
+    "r2",
+    "free-tier"
   ],
   "license": "MIT",
   "devDependencies": {
+    "vitest": "^2.1.0",
     "wrangler": "^4.0.0"
   }
 }
