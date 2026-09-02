@@ -876,3 +876,173 @@ input, textarea {
   font-size: 12px;
   line-height: 1.6;
 }
+.admin-pager {
+  margin-top: 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+.admin-search {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: var(--card);
+  color: var(--text);
+  width: 180px;
+}
+.btn-danger {
+  background: var(--danger);
+  color: #fff;
+}
+.btn-danger:hover { background: color-mix(in srgb, var(--danger) 80%, black); }
+
+/* ---------- 批量操作栏 ---------- */
+.selected-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  background: var(--accent-weak);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--accent-strong);
+}
+
+/* ---------- 笔记复选框（多选） ---------- */
+.memo-card {
+  position: relative;
+}
+.memo-check {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  z-index: 2;
+}
+
+/* ---------- 分享标识 ---------- */
+.memo-shared {
+  color: var(--muted);
+  font-size: 13px;
+  margin-right: 6px;
+}
+
+/* ---------- 标签搜索/排序 ---------- */
+.tag-search, .tag-sort {
+  width: 100%;
+  margin-bottom: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 10px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 13px;
+}
+
+/* ---------- 上下文菜单 ---------- */
+.ctx-menu {
+  position: fixed;
+  z-index: 300;
+  background: var(--card);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow-md);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+}
+.ctx-menu button {
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text);
+}
+.ctx-menu button:hover { background: var(--accent-weak); color: var(--accent-strong); }
+.ctx-menu button.danger { color: var(--danger); }
+
+/* ---------- 字数计数颜色 ---------- */
+.md-count.warn { color: #d97706; }
+.md-count.danger { color: var(--danger); font-weight: 600; }
+
+/* ---------- 统计：本周对比、24h 柱状、标签云 ---------- */
+.stat-compare {
+  margin: 0 0 18px;
+  padding: 10px 14px;
+  background: var(--accent-softer);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  color: var(--text-soft);
+}
+.hour-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 100px;
+  margin-bottom: 12px;
+}
+.hour-bar {
+  flex: 1;
+  background: var(--accent);
+  min-height: 2px;
+  border-radius: 2px 2px 0 0;
+  opacity: 0.85;
+  transition: opacity 0.15s;
+}
+.hour-bar:hover { opacity: 1; }
+.tag-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: baseline;
+  margin-bottom: 14px;
+}
+.tag-cloud-item {
+  color: var(--accent);
+  background: var(--accent-softer);
+  border-radius: 6px;
+  padding: 2px 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+  text-decoration: none;
+}
+.tag-cloud-item:hover { background: var(--accent-weak); text-decoration: none; }
+
+/* ---------- 回顾弹窗：数量切换 ---------- */
+.review-num {
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 4px 8px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 13px;
+}
+
+/* ---------- Toast with action ---------- */
+.toast-action { display: flex; align-items: center; gap: 10px; padding-right: 8px; }
+.toast-btn {
+  background: var(--accent-weak);
+  color: var(--accent-strong);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.toast-btn:hover { background: var(--accent); color: #fff; }
+
+/* ---------- 响应式微调 ---------- */
+@media (max-width: 900px) {
+  .stat-cards { grid-template-columns: repeat(3, 1fr); }
+  .memo-check { right: 8px; top: 10px; }
+}
+@media (max-width: 600px) {
+  .hour-chart { height: 80px; }
+  .admin-search { width: 130px; }
+}

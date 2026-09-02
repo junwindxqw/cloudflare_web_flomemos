@@ -1,35 +1,57 @@
-// Flomemos 前端入口：登录注册 / 笔记列表 / 编辑器 / 标签 / 搜索 / 统计 / 回顾 / 用户管理
+// Flomemos 前端入口：登录注册 / 笔记列表 / 编辑器 / 标签 / 搜索 / 统计 / 回顾 / 用户管理 / 分享 / 回收站 / 撤销
 
 import { api, ApiError } from './api.js';
 import { renderMemoHtml, escapeHtml } from './md.js';
 import { MarkdownEditor } from './editor.js';
+import { t, setLocale, getLocale, supportedLocales } from './i18n.js';
 
 const $ = (sel) => document.querySelector(sel);
 
 const state = {
   email: '',
   role: 'user',
-  view: 'all', // all | pinned | tag
+  view: 'all', // all | pinned | tag | trash
   tag: '',
-  q: '',
+  tagsFilter: '',
+  tagsSort: localStorage.getItem('fm-tags-sort') || 'count',
+  q: [],
   memos: [],
   hasMore: false,
   nextBefore: 0,
   loading: false,
-  tags: [], // [{tag, count}]
+  tags: [],
+  selected: new Set(), // 多选
+  previewOpen: false,
 };
 
 // ---------------- 工具 ----------------
-function toast(message, type = 'info') {
+function toast(message, type = 'info', action) {
   const el = document.createElement('div');
   el.className = 'toast toast-' + type;
-  el.textContent = message;
+  if (action) el.classList.add('toast-action');
+  const span = document.createElement('span');
+  span.textContent = message;
+  el.appendChild(span);
+  if (action) {
+    const btn = document.createElement('button');
+    btn.className = 'toast-btn';
+    btn.textContent = action.label;
+    btn.addEventListener('click', () => {
+      action.onClick();
+      el.remove();
+    });
+    el.appendChild(btn);
+  }
   $('#toast-wrap').appendChild(el);
   setTimeout(() => el.classList.add('show'), 10);
-  setTimeout(() => {
-    el.classList.remove('show');
-    setTimeout(() => el.remove(), 300);
-  }, 2600);
+  if (action && action.duration) {
+    setTimeout(() => el.remove(), action.duration);
+  } else {
+    setTimeout(() => {
+      el.classList.remove('show');
+      setTimeout(() => el.remove(), 300);
+    }, 2600);
+  }
 }
 
 document.addEventListener('fm:toast', (e) => toast(e.detail, 'error'));
@@ -47,6 +69,16 @@ function fmtFull(iso) {
   return new Date(iso).toLocaleString('zh-CN', { hour12: false });
 }
 
+function fmtRelative(iso) {
+  const d = new Date(iso);
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return '刚刚';
+  if (diff < 3600) return Math.floor(diff / 60) + ' 分钟前';
+  if (diff < 86400) return Math.floor(diff / 3600) + ' 小时前';
+  if (diff < 7 * 86400) return Math.floor(diff / 86400) + ' 天前';
+  return fmtTime(iso);
+}
+
 function dayInfo(iso) {
   const d = new Date(iso);
   const now = new Date();
@@ -56,6 +88,7 @@ function dayInfo(iso) {
   let label;
   if (diffDays === 0) label = '今天';
   else if (diffDays === 1) label = '昨天';
+  else if (diffDays > 1 && diffDays < 7) label = diffDays + ' 天前 · ' + '周' + weekdays[d.getDay()];
   else {
     label = (d.getFullYear() !== now.getFullYear() ? d.getFullYear() + '年' : '') +
       (d.getMonth() + 1) + '月' + d.getDate() + '日 周' + weekdays[d.getDay()];
@@ -65,8 +98,24 @@ function dayInfo(iso) {
 }
 
 function handleActionError(err) {
-  if (err instanceof ApiError && (err.status === 401 || err.code === 'banned')) return; // 已由全局事件处理
+  if (err instanceof ApiError && (err.status === 401 || err.code === 'banned')) return;
   toast(err.message, 'error');
+}
+
+// 自动保存草稿
+const DRAFT_KEY = () => 'fm-draft:' + (state.email || 'anon');
+let draftTimer = null;
+function saveDraft(text) {
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => {
+    try { localStorage.setItem(DRAFT_KEY(), text); } catch {}
+  }, 400);
+}
+function loadDraft() {
+  try { return localStorage.getItem(DRAFT_KEY()) || ''; } catch { return ''; }
+}
+function clearDraft() {
+  try { localStorage.removeItem(DRAFT_KEY()); } catch {}
 }
 
 // ---------------- 视图切换 ----------------
@@ -107,6 +156,8 @@ function enterApp(user) {
   state.email = user.email;
   state.role = user.role || 'user';
   $('#nav-admin').classList.toggle('hidden', state.role !== 'admin');
+  $('#nav-trash').classList.remove('hidden');
+  $('#nav-batch').classList.remove('hidden');
   renderSideUser();
   showMain();
   mountEditor();
@@ -142,7 +193,8 @@ document.addEventListener('fm:banned', (e) => {
 
 // ---------------- 启动 ----------------
 async function boot() {
-  applyTheme(localStorage.getItem('fm-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+  applyTheme(localStorage.getItem('fm-theme') || 'auto');
+  await setLocale(localStorage.getItem('fm-locale') || navigator.language || 'zh-CN');
   try {
     const me = await api('/api/me');
     if (me.authenticated) enterApp({ email: me.email, role: me.role });
@@ -150,6 +202,9 @@ async function boot() {
   } catch (err) {
     showAuth({ mode: 'login' });
     toast(err.message || '加载失败', 'error');
+  }
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/assets/sw.js').catch(() => {});
   }
 }
 
@@ -272,15 +327,24 @@ let mainEditor = null;
 
 function mountEditor() {
   if (mainEditor) return;
+  const draft = loadDraft();
   mainEditor = new MarkdownEditor($('#editor-mount'), {
     placeholder: '记录想法… 用 #标签 归类',
     submitText: '记录',
     getTags: () => state.tags.map((t) => t.tag),
     uploadImage: uploadImage,
+    initial: draft,
+    onChange: (text) => saveDraft(text),
     onSubmit: async (text) => {
       const res = await api('/api/memos', { method: 'POST', body: { content: text } });
+      clearDraft();
       await refreshTags();
       updateTotalCount();
+      if (state.view === 'trash') {
+        // 切回全部
+        state.view = 'all';
+        setNavActive('all');
+      }
       if (isFreshList()) {
         state.memos.unshift(res.memo);
         renderMemoList();
@@ -293,10 +357,10 @@ function mountEditor() {
   });
 }
 
-async function uploadImage(file) {
+async function uploadImage(file, onProgress) {
   const form = new FormData();
   form.append('file', file);
-  const res = await api('/api/upload', { method: 'POST', body: form });
+  const res = await api('/api/upload', { method: 'POST', body: form, onProgress });
   return res.url;
 }
 
@@ -309,6 +373,8 @@ async function reloadMemos() {
   state.memos = [];
   state.nextBefore = 0;
   state.hasMore = false;
+  state.selected.clear();
+  renderSelectedBar();
   renderMemoList();
   await loadMore();
 }
@@ -318,6 +384,14 @@ async function loadMore() {
   state.loading = true;
   $('#sentinel').classList.remove('hidden');
   try {
+    if (state.view === 'trash') {
+      const res = await api('/api/trash?limit=50');
+      state.memos = state.memos.concat(res.memos);
+      state.hasMore = false;
+      state.nextBefore = 0;
+      renderMemoList();
+      return;
+    }
     const params = new URLSearchParams();
     params.set('limit', '20');
     if (state.nextBefore) params.set('before', String(state.nextBefore));
@@ -345,6 +419,9 @@ function updateFilterBar() {
   if (state.view === 'tag' && state.tag) {
     chip.textContent = '标签：#' + state.tag;
     bar.classList.remove('hidden');
+  } else if (state.view === 'trash') {
+    chip.textContent = '回收站（30 天内可恢复）';
+    bar.classList.remove('hidden');
   } else if (state.q) {
     chip.textContent = '搜索：' + state.q;
     bar.classList.remove('hidden');
@@ -361,10 +438,16 @@ function renderMemoList() {
   if (!state.memos.length) {
     const empty = document.createElement('div');
     empty.className = 'list-empty';
-    empty.innerHTML = state.q
-      ? '<p>没有找到与「' + escapeHtml(state.q) + '」相关的笔记</p>'
-      : '<p class="list-empty-main">还没有笔记</p><p>在上方写下第一条想法吧，用 #标签 归类 ✨</p>';
+    if (state.view === 'trash') {
+      empty.innerHTML = '<p>回收站是空的</p>';
+    } else if (state.q) {
+      empty.innerHTML = '<p>没有找到与「' + escapeHtml(state.q) + '」相关的笔记</p><button class="btn btn-ghost btn-sm" id="empty-clear-search">清除搜索</button>';
+    } else {
+      empty.innerHTML = '<p class="list-empty-main">还没有笔记</p><p>在上方写下第一条想法吧，用 #标签 归类 ✨</p>';
+    }
     list.appendChild(empty);
+    const btn = list.querySelector('#empty-clear-search');
+    if (btn) btn.addEventListener('click', () => doSearch(''));
     return;
   }
 
@@ -380,13 +463,26 @@ function renderMemoList() {
     }
     list.appendChild(renderMemoCard(memo));
   }
-  $('#sentinel').classList.toggle('hidden', !state.hasMore);
+  $('#sentinel').classList.toggle('hidden', !state.hasMore || state.view === 'trash');
 }
 
 function renderMemoCard(memo) {
   const card = document.createElement('article');
   card.className = 'memo-card';
   card.dataset.id = memo.id;
+
+  if (state.selected.size > 0) {
+    const sel = document.createElement('input');
+    sel.type = 'checkbox';
+    sel.className = 'memo-check';
+    sel.checked = state.selected.has(memo.id);
+    sel.addEventListener('change', () => {
+      if (sel.checked) state.selected.add(memo.id);
+      else state.selected.delete(memo.id);
+      renderSelectedBar();
+    });
+    card.appendChild(sel);
+  }
 
   const body = document.createElement('div');
   body.className = 'memo-content md-body';
@@ -414,18 +510,35 @@ function renderMemoCard(memo) {
   const right = document.createElement('span');
   right.className = 'memo-right';
 
-  const actions = document.createElement('span');
-  actions.className = 'memo-actions';
-  actions.appendChild(actionBtn('⭐', memo.pinned ? '取消收藏' : '收藏', () => togglePin(memo)));
-  actions.appendChild(actionBtn('✏️', '编辑', () => editMemo(card, memo)));
-  actions.appendChild(actionBtn('📋', '复制', () => copyMemo(memo)));
-  actions.appendChild(actionBtn('🗑', '删除', () => deleteMemo(memo)));
-  right.appendChild(actions);
+  if (memo.shared) {
+    const s = document.createElement('span');
+    s.className = 'memo-shared';
+    s.textContent = '🔗';
+    s.title = '已生成分享链接';
+    right.appendChild(s);
+  }
+
+  if (state.view !== 'trash') {
+    const actions = document.createElement('span');
+    actions.className = 'memo-actions';
+    actions.appendChild(actionBtn('⭐', memo.pinned ? '取消收藏' : '收藏', () => togglePin(memo)));
+    actions.appendChild(actionBtn('🔗', '分享', () => shareMemo(memo)));
+    actions.appendChild(actionBtn('✏️', '编辑', () => editMemo(card, memo)));
+    actions.appendChild(actionBtn('📋', '复制', () => copyMemo(memo)));
+    actions.appendChild(actionBtn('🗑', '删除', () => deleteMemo(memo)));
+    right.appendChild(actions);
+  } else {
+    const actions = document.createElement('span');
+    actions.className = 'memo-actions';
+    actions.appendChild(actionBtn('♻️', '恢复', () => restoreMemo(memo)));
+    actions.appendChild(actionBtn('❌', '永久删除', () => purgeMemo(memo)));
+    right.appendChild(actions);
+  }
 
   const time = document.createElement('span');
   time.className = 'memo-time';
   time.textContent = fmtTime(memo.created_at);
-  time.title = fmtFull(memo.created_at);
+  time.title = fmtFull(memo.created_at) + ' · ' + fmtRelative(memo.created_at);
   right.appendChild(time);
 
   meta.appendChild(right);
@@ -438,6 +551,7 @@ function actionBtn(icon, title, onClick) {
   b.className = 'memo-act icon-btn';
   b.textContent = icon;
   b.title = title;
+  b.setAttribute('aria-label', title);
   b.addEventListener('click', onClick);
   return b;
 }
@@ -458,14 +572,60 @@ async function togglePin(memo) {
 }
 
 async function deleteMemo(memo) {
-  if (!confirm('确定删除这条笔记吗？删除后不可恢复。')) return;
+  if (!confirm('确定删除这条笔记吗？30 天内可在回收站恢复。')) return;
   try {
     await api('/api/memos/' + memo.id, { method: 'DELETE' });
     state.memos = state.memos.filter((m) => m.id !== memo.id);
     renderMemoList();
     await refreshTags();
     updateTotalCount();
-    toast('已删除');
+    toast('已移到回收站', 'info', {
+      label: '撤销',
+      duration: 5000,
+      onClick: async () => {
+        try {
+          await api('/api/memos/' + memo.id + '/restore', { method: 'POST' });
+          toast('已恢复');
+          await reloadMemos();
+        } catch (err) { handleActionError(err); }
+      },
+    });
+  } catch (err) {
+    handleActionError(err);
+  }
+}
+
+async function restoreMemo(memo) {
+  try {
+    await api('/api/memos/' + memo.id + '/restore', { method: 'POST' });
+    state.memos = state.memos.filter((m) => m.id !== memo.id);
+    renderMemoList();
+    toast('已恢复 ✅');
+  } catch (err) {
+    handleActionError(err);
+  }
+}
+
+async function purgeMemo(memo) {
+  if (!confirm('永久删除这条笔记？此操作不可恢复。')) return;
+  try {
+    await api('/api/memos/' + memo.id, { method: 'DELETE' });
+    state.memos = state.memos.filter((m) => m.id !== memo.id);
+    renderMemoList();
+    toast('已永久删除');
+  } catch (err) {
+    handleActionError(err);
+  }
+}
+
+async function shareMemo(memo) {
+  try {
+    const res = await api('/api/memos/' + memo.id + '/share', { method: 'POST' });
+    const url = location.origin + res.url;
+    try { await navigator.clipboard.writeText(url); } catch {}
+    memo.shared = true;
+    renderMemoList();
+    toast('分享链接已复制到剪贴板 🔗');
   } catch (err) {
     handleActionError(err);
   }
@@ -511,40 +671,143 @@ function editMemo(card, memo) {
 // ---------------- 标签 ----------------
 async function refreshTags() {
   try {
-    const res = await api('/api/tags');
+    const res = await api('/api/tags?sort=' + encodeURIComponent(state.tagsSort));
     state.tags = res.tags;
     renderTagList();
   } catch {
-    // 忽略：标签加载失败不阻塞主流程
+    // 忽略
   }
 }
 
 function renderTagList() {
   const wrap = $('#tag-list');
   wrap.innerHTML = '';
+  // 搜索框
+  const search = document.createElement('input');
+  search.type = 'search';
+  search.placeholder = '搜索标签…';
+  search.className = 'tag-search';
+  search.value = state.tagsFilter;
+  search.addEventListener('input', () => {
+    state.tagsFilter = search.value.trim();
+    renderTagItems();
+  });
+  wrap.appendChild(search);
+
+  // 排序选择
+  const sortSel = document.createElement('select');
+  sortSel.className = 'tag-sort';
+  for (const [val, lab] of [['count', '使用频率'], ['name', '名称'], ['recent', '最近使用']]) {
+    const o = document.createElement('option');
+    o.value = val; o.textContent = lab;
+    if (state.tagsSort === val) o.selected = true;
+    sortSel.appendChild(o);
+  }
+  sortSel.addEventListener('change', () => {
+    state.tagsSort = sortSel.value;
+    localStorage.setItem('fm-tags-sort', state.tagsSort);
+    refreshTags();
+  });
+  wrap.appendChild(sortSel);
+
+  const list = document.createElement('div');
+  list.id = 'tag-items';
+  wrap.appendChild(list);
+
   if (!state.tags.length) {
     const p = document.createElement('p');
     p.className = 'tag-empty';
     p.textContent = '暂无标签，在笔记里用 #标签 即可创建';
-    wrap.appendChild(p);
+    list.appendChild(p);
     return;
   }
-  for (const t of state.tags) {
-    const depth = (t.tag.match(/\//g) || []).length;
-    const item = document.createElement('button');
-    item.className = 'tag-item' + (state.view === 'tag' && state.tag === t.tag ? ' active' : '');
-    item.style.paddingLeft = 6 + depth * 14 + 'px';
-    const name = document.createElement('span');
-    name.className = 'tag-name';
-    name.textContent = '#' + t.tag;
-    item.appendChild(name);
-    const count = document.createElement('span');
-    count.className = 'tag-count';
-    count.textContent = t.count;
-    item.appendChild(count);
-    item.addEventListener('click', () => filterByTag(t.tag));
-    wrap.appendChild(item);
+  renderTagItems();
+
+  function renderTagItems() {
+    list.innerHTML = '';
+    const filter = state.tagsFilter.toLowerCase();
+    for (const t of state.tags) {
+      if (filter && !t.tag.toLowerCase().includes(filter)) continue;
+      const depth = (t.tag.match(/\//g) || []).length;
+      const item = document.createElement('button');
+      item.className = 'tag-item' + (state.view === 'tag' && state.tag === t.tag ? ' active' : '');
+      item.style.paddingLeft = 6 + depth * 14 + 'px';
+      const name = document.createElement('span');
+      name.className = 'tag-name';
+      name.textContent = '#' + t.tag;
+      item.appendChild(name);
+      const count = document.createElement('span');
+      count.className = 'tag-count';
+      count.textContent = t.count;
+      item.appendChild(count);
+      item.addEventListener('click', () => filterByTag(t.tag));
+      item.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        openTagMenu(t.tag, e.clientX, e.clientY);
+      });
+      list.appendChild(item);
+    }
   }
+}
+
+function openTagMenu(tag, x, y) {
+  closeTagMenu();
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.id = 'tag-ctx-menu';
+  const items = [
+    { label: '重命名', onClick: () => renameTagPrompt(tag) },
+    { label: '合并到…', onClick: () => mergeTagPrompt(tag) },
+    { label: '删除标签', onClick: () => deleteTagPrompt(tag), danger: true },
+  ];
+  for (const it of items) {
+    const b = document.createElement('button');
+    b.textContent = it.label;
+    if (it.danger) b.className = 'danger';
+    b.addEventListener('click', () => { it.onClick(); closeTagMenu(); });
+    menu.appendChild(b);
+  }
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  document.body.appendChild(menu);
+  setTimeout(() => document.addEventListener('click', closeTagMenu, { once: true }), 0);
+}
+function closeTagMenu() {
+  const m = $('#tag-ctx-menu');
+  if (m) m.remove();
+}
+
+async function renameTagPrompt(oldName) {
+  const newName = prompt('把标签「' + oldName + '」重命名为：', oldName);
+  if (!newName || newName.trim() === oldName) return;
+  try {
+    await api('/api/tags/rename', { method: 'POST', body: { oldName, newName: newName.trim() } });
+    await refreshTags();
+    if (state.tag === oldName) state.tag = newName.trim();
+    reloadMemos();
+    toast('已重命名');
+  } catch (err) { handleActionError(err); }
+}
+
+async function mergeTagPrompt(fromName) {
+  const toName = prompt('把标签「' + fromName + '」合并到：');
+  if (!toName || toName.trim() === fromName) return;
+  try {
+    await api('/api/tags/merge', { method: 'POST', body: { from: fromName, to: toName.trim() } });
+    await refreshTags();
+    reloadMemos();
+    toast('已合并');
+  } catch (err) { handleActionError(err); }
+}
+
+async function deleteTagPrompt(tag) {
+  if (!confirm('删除标签「' + tag + '」？（不会删除笔记）')) return;
+  try {
+    await api('/api/tags/' + encodeURIComponent(tag), { method: 'DELETE' });
+    await refreshTags();
+    reloadMemos();
+    toast('已删除标签');
+  } catch (err) { handleActionError(err); }
 }
 
 function filterByTag(tag) {
@@ -597,6 +860,56 @@ function doSearch(q) {
   reloadMemos();
 }
 
+// ---------------- 批量操作栏 ----------------
+function renderSelectedBar() {
+  const bar = $('#selected-bar');
+  const n = state.selected.size;
+  bar.classList.toggle('hidden', n === 0);
+  bar.innerHTML = '';
+  if (n === 0) return;
+
+  const info = document.createElement('span');
+  info.textContent = '已选 ' + n + ' 条';
+  bar.appendChild(info);
+
+  bar.appendChild(batchBtn('收藏', async () => {
+    await api('/api/memos/batch-pin', { method: 'POST', body: { ids: [...state.selected], pinned: true } });
+    toast('已收藏'); state.selected.clear(); reloadMemos();
+  }));
+  bar.appendChild(batchBtn('取消收藏', async () => {
+    await api('/api/memos/batch-pin', { method: 'POST', body: { ids: [...state.selected], pinned: false } });
+    toast('已取消收藏'); state.selected.clear(); reloadMemos();
+  }));
+  bar.appendChild(batchBtn('打标签…', async () => {
+    const tag = prompt('给选中的笔记添加标签：');
+    if (!tag) return;
+    await api('/api/memos/batch-tag', { method: 'POST', body: { ids: [...state.selected], tag: tag.trim() } });
+    toast('已添加标签'); state.selected.clear(); reloadMemos();
+  }));
+  bar.appendChild(batchBtn('删除', async () => {
+    if (!confirm('删除选中的 ' + n + ' 条笔记？')) return;
+    await api('/api/memos/batch-delete', { method: 'POST', body: { ids: [...state.selected] } });
+    toast('已移到回收站', 'info', {
+      label: '撤销', duration: 5000,
+      onClick: async () => {
+        for (const id of [...state.selected]) {
+          try { await api('/api/memos/' + id + '/restore', { method: 'POST' }); } catch {}
+        }
+        toast('已恢复'); reloadMemos();
+      },
+    });
+    state.selected.clear(); reloadMemos();
+  }, 'danger'));
+  bar.appendChild(batchBtn('取消', () => { state.selected.clear(); renderSelectedBar(); renderMemoList(); }));
+}
+function batchBtn(label, onClick, kind) {
+  const b = document.createElement('button');
+  b.className = 'btn btn-sm ' + (kind === 'danger' ? 'btn-danger' : 'btn-ghost');
+  b.textContent = label;
+  b.addEventListener('click', onClick);
+  return b;
+}
+
 // ---------------- 侧栏导航 ----------------
 function setNavActive(name) {
   document.querySelectorAll('.nav-item').forEach((b) => {
@@ -610,26 +923,30 @@ function bindNav() {
       const nav = b.dataset.nav;
       closeSidebar();
       if (nav === 'all') {
-        state.view = 'all';
-        state.tag = '';
-        state.q = '';
+        state.view = 'all'; state.tag = ''; state.q = '';
         $('#search-input').value = '';
         $('#search-clear').classList.add('hidden');
-        setNavActive('all');
-        renderTagList();
-        reloadMemos();
+        setNavActive('all'); renderTagList(); reloadMemos();
       } else if (nav === 'pinned') {
-        state.view = 'pinned';
-        state.tag = '';
-        setNavActive('pinned');
-        renderTagList();
-        reloadMemos();
+        state.view = 'pinned'; state.tag = '';
+        setNavActive('pinned'); renderTagList(); reloadMemos();
+      } else if (nav === 'trash') {
+        state.view = 'trash'; state.tag = ''; state.q = '';
+        setNavActive('trash'); reloadMemos();
       } else if (nav === 'review') {
         openReview();
       } else if (nav === 'stats') {
         openStats();
       } else if (nav === 'admin') {
         openAdmin();
+      } else if (nav === 'batch') {
+        // 切到批量模式：再点一次退出
+        if (state.selected.size > 0) {
+          state.selected.clear(); renderMemoList(); renderSelectedBar();
+        } else {
+          state.selected.clear(); renderMemoList(); renderSelectedBar();
+          toast('点击笔记左侧复选框开始批量选择');
+        }
       }
     });
   });
@@ -644,19 +961,51 @@ function bindSidebar() {
   $('#sidebar-mask').addEventListener('click', closeSidebar);
 
   $('#theme-toggle').addEventListener('click', () => {
-    const dark = document.documentElement.dataset.theme !== 'dark';
+    const cur = document.documentElement.dataset.theme || 'auto';
+    const dark = !(cur === 'dark');
     applyTheme(dark ? 'dark' : 'light');
-    localStorage.setItem('fm-theme', dark ? 'dark' : 'light');
+    localStorage.setItem('fm-theme', document.documentElement.dataset.theme);
+  });
+
+  $('#lang-toggle').addEventListener('click', () => {
+    const cur = getLocale();
+    const idx = supportedLocales.indexOf(cur);
+    const next = supportedLocales[(idx + 1) % supportedLocales.length];
+    setLocale(next).then(() => {
+      localStorage.setItem('fm-locale', next);
+      toast('Language: ' + next);
+      renderTagList();
+      renderMemoList();
+      renderSideUser();
+    });
   });
 
   $('#export-md').addEventListener('click', () => downloadExport('md'));
   $('#export-json').addEventListener('click', () => downloadExport('json'));
+  $('#import-btn').addEventListener('click', () => $('#import-input').click());
+  $('#import-input').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const form = new FormData(); form.append('file', f);
+    try {
+      const res = await api('/api/import', { method: 'POST', body: form });
+      toast('已导入 ' + res.imported + ' 条');
+      reloadMemos(); refreshTags(); updateTotalCount();
+    } catch (err) { handleActionError(err); }
+    e.target.value = '';
+  });
 
   $('#logout').addEventListener('click', async () => {
-    try {
-      await api('/api/auth/logout', { method: 'POST' });
-    } catch { /* 忽略 */ }
+    try { await api('/api/auth/logout', { method: 'POST' }); } catch {}
     location.reload();
+  });
+
+  // filter-bar 清除按钮
+  $('#filter-clear').addEventListener('click', () => {
+    state.view = 'all'; state.tag = ''; state.q = '';
+    $('#search-input').value = '';
+    $('#search-clear').classList.add('hidden');
+    setNavActive('all'); renderTagList(); reloadMemos();
   });
 }
 
@@ -673,19 +1022,20 @@ function downloadExport(format) {
 // ---------------- 弹窗 ----------------
 function bindModals() {
   document.querySelectorAll('[data-close]').forEach((el) => {
-    el.addEventListener('click', () => {
-      $('#' + el.dataset.close).classList.add('hidden');
-    });
+    el.addEventListener('click', () => { $('#' + el.dataset.close).classList.add('hidden'); closeTagMenu(); });
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      closeTagMenu();
       $('#review-modal').classList.add('hidden');
       $('#stats-modal').classList.add('hidden');
       $('#admin-modal').classList.add('hidden');
     }
   });
   $('#review-refresh').addEventListener('click', loadReview);
+  $('#review-num').addEventListener('change', loadReview);
   $('#admin-refresh').addEventListener('click', loadUsers);
+  $('#admin-search').addEventListener('input', () => setTimeout(loadUsers, 300));
 }
 
 function openReview() {
@@ -696,8 +1046,9 @@ function openReview() {
 async function loadReview() {
   const body = $('#review-body');
   body.innerHTML = '<p class="modal-tip">加载中…</p>';
+  const num = Number($('#review-num').value) || 5;
   try {
-    const res = await api('/api/memos/random?limit=5');
+    const res = await api('/api/memos/random?limit=' + num);
     body.innerHTML = '';
     if (!res.memos.length) {
       body.innerHTML = '<p class="modal-tip">还没有任何笔记，先去记录吧～</p>';
@@ -734,15 +1085,26 @@ function openAdmin() {
 async function loadUsers() {
   const body = $('#admin-body');
   body.innerHTML = '<p class="modal-tip">加载中…</p>';
+  const q = $('#admin-search').value.trim();
   try {
-    const res = await api('/api/admin/users');
+    const res = await api('/api/admin/users?q=' + encodeURIComponent(q));
     body.innerHTML = '';
+    if (!res.users.length) {
+      body.innerHTML = '<p class="modal-tip">没有匹配的用户</p>';
+      return;
+    }
     const table = document.createElement('div');
     table.className = 'admin-table';
-    for (const u of res.users) {
-      table.appendChild(renderUserRow(u));
-    }
+    for (const u of res.users) table.appendChild(renderUserRow(u));
     body.appendChild(table);
+
+    if (res.total > res.users.length) {
+      const pager = document.createElement('div');
+      pager.className = 'admin-pager';
+      pager.textContent = '共 ' + res.total + ' 个用户 · 显示前 ' + res.users.length;
+      body.appendChild(pager);
+    }
+
     const tip = document.createElement('p');
     tip.className = 'admin-tip';
     tip.textContent = '封禁后该用户将立即退出登录且无法再登录；删除会一并清除其全部笔记与图片，不可恢复。';
@@ -777,7 +1139,9 @@ function renderUserRow(u) {
 
   const meta = document.createElement('div');
   meta.className = 'admin-user-meta';
-  meta.textContent = u.memo_count + ' 条笔记 · 注册于 ' + (u.created_at || '').slice(0, 10);
+  const lastLogin = u.last_login_at ? ' · 最近登录 ' + u.last_login_at.slice(0, 10) : '';
+  const lastMemo = u.last_memo_at ? ' · 最近笔记 ' + u.last_memo_at.slice(0, 10) : '';
+  meta.textContent = u.memo_count + ' 条笔记 · 注册于 ' + (u.created_at || '').slice(0, 10) + lastLogin + lastMemo;
   info.appendChild(meta);
   row.appendChild(info);
 
@@ -793,7 +1157,7 @@ function renderUserRow(u) {
     const delBtn = document.createElement('button');
     delBtn.className = 'btn btn-ghost btn-sm admin-delete';
     delBtn.textContent = '删除';
-    delBtn.addEventListener('click', () => deleteUser(u));
+    delBtn.addEventListener('click', () => deleteUserRow(u));
     actions.appendChild(delBtn);
   } else {
     const self = document.createElement('span');
@@ -811,20 +1175,15 @@ async function toggleBan(u) {
     u.banned = res.banned;
     loadUsers();
     toast(u.banned ? '已封禁 ' + u.email : '已解封 ' + u.email);
-  } catch (err) {
-    handleActionError(err);
-  }
+  } catch (err) { handleActionError(err); }
 }
-
-async function deleteUser(u) {
-  if (!confirm('确定删除用户「' + u.email + '」吗？\n其全部笔记与图片将一并删除，不可恢复。')) return;
+async function deleteUserRow(u) {
+  if (!confirm('确定删除用户' + u.email + '？\n其全部笔记与图片将一并删除，不可恢复。')) return;
   try {
     await api('/api/admin/users/' + u.id, { method: 'DELETE' });
     loadUsers();
     toast('已删除用户 ' + u.email);
-  } catch (err) {
-    handleActionError(err);
-  }
+  } catch (err) { handleActionError(err); }
 }
 
 // ---------------- 统计 ----------------
@@ -847,6 +1206,7 @@ async function loadStats() {
       ['今日新增', s.today],
       ['最近 7 天', s.week],
       ['连续记录（天）', s.streak],
+      ['最长连续', s.max_streak || 0],
       ['标签数', s.tags],
     ];
     for (const [label, value] of items) {
@@ -858,11 +1218,64 @@ async function loadStats() {
       const lab = document.createElement('div');
       lab.className = 'stat-label';
       lab.textContent = label;
-      c.appendChild(num);
-      c.appendChild(lab);
+      c.append(num, lab);
       cards.appendChild(c);
     }
     body.appendChild(cards);
+
+    // 本周 vs 上周
+    if (s.week_compare) {
+      const cmp = document.createElement('div');
+      cmp.className = 'stat-compare';
+      const thisW = s.week_compare.this_week || 0;
+      const lastW = s.week_compare.last_week || 0;
+      const delta = lastW > 0 ? Math.round((thisW - lastW) / lastW * 100) : 0;
+      cmp.innerHTML = '本周 <b>' + thisW + '</b> 条 vs 上周 <b>' + lastW + '</b> 条 · '
+        + (delta === 0 ? '持平' : (delta > 0 ? '📈 +' : '📉 ') + delta + '%');
+      body.appendChild(cmp);
+    }
+
+    // 24 小时柱状图
+    if (s.by_hour) {
+      const hourTitle = document.createElement('div');
+      hourTitle.className = 'heat-title';
+      hourTitle.textContent = '活跃时段（24 小时）';
+      body.appendChild(hourTitle);
+      const chart = document.createElement('div');
+      chart.className = 'hour-chart';
+      const max = Math.max(1, ...Object.values(s.by_hour));
+      for (let h = 0; h < 24; h++) {
+        const bar = document.createElement('div');
+        bar.className = 'hour-bar';
+        bar.style.height = ((s.by_hour[h] || 0) / max * 100) + '%';
+        bar.title = h + ':00 · ' + (s.by_hour[h] || 0) + ' 条';
+        chart.appendChild(bar);
+      }
+      body.appendChild(chart);
+    }
+
+    // 标签云
+    if (s.top_tags && s.top_tags.length) {
+      const tagTitle = document.createElement('div');
+      tagTitle.className = 'heat-title';
+      tagTitle.textContent = '热门标签';
+      body.appendChild(tagTitle);
+      const cloud = document.createElement('div');
+      cloud.className = 'tag-cloud';
+      const max = s.top_tags[0].count;
+      for (const t of s.top_tags) {
+        const a = document.createElement('a');
+        a.className = 'tag-cloud-item';
+        a.style.fontSize = (12 + (t.count / max) * 8) + 'px';
+        a.textContent = '#' + t.tag;
+        a.addEventListener('click', () => {
+          $('#stats-modal').classList.add('hidden');
+          filterByTag(t.tag);
+        });
+        cloud.appendChild(a);
+      }
+      body.appendChild(cloud);
+    }
 
     const heatTitle = document.createElement('div');
     heatTitle.className = 'heat-title';
@@ -894,7 +1307,6 @@ function buildHeatmap(days) {
   const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const start = new Date(end);
   start.setDate(start.getDate() - 26 * 7 + 1);
-  // 从周一对齐
   const offset = (start.getDay() + 6) % 7;
   start.setDate(start.getDate() - offset);
 
@@ -927,13 +1339,24 @@ function buildHeatmap(days) {
 
 // ---------------- 主题 ----------------
 function applyTheme(theme) {
-  document.documentElement.dataset.theme = theme;
-  $('#theme-toggle').textContent = theme === 'dark' ? '☀️ 日间模式' : '🌙 夜间模式';
+  const root = document.documentElement;
+  if (theme === 'auto') {
+    const prefersDark = matchMedia('(prefers-color-scheme: dark)').matches;
+    root.dataset.theme = prefersDark ? 'dark' : 'light';
+    root.dataset.themeMode = 'auto';
+  } else {
+    root.dataset.theme = theme;
+    root.dataset.themeMode = theme;
+  }
+  const btn = $('#theme-toggle');
+  if (btn) btn.textContent = root.dataset.themeMode === 'auto' ? '🌓 跟随系统' : (root.dataset.theme === 'dark' ? '☀️ 日间模式' : '🌙 夜间模式');
 }
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  if (document.documentElement.dataset.themeMode === 'auto') applyTheme('auto');
+});
 
 // ---------------- 全局事件 ----------------
 function bindGlobal() {
-  // 正文中的 #标签 点击过滤
   $('#memo-list').addEventListener('click', (e) => {
     const tag = e.target.closest('.fm-tag');
     if (tag) {
@@ -942,7 +1365,6 @@ function bindGlobal() {
     }
   });
 
-  // 无限滚动
   const observer = new IntersectionObserver((entries) => {
     if (entries.some((en) => en.isIntersecting) && state.hasMore && !state.loading) {
       loadMore();

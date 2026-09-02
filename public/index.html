@@ -7,6 +7,10 @@
   <title>Flomemos · 云端便签</title>
   <meta name="description" content="Flomemos —— 部署在 Cloudflare 免费服务上的 flomo 风格多用户笔记便签">
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#0aa870">
+  <meta name="apple-mobile-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-mobile-web-app-title" content="Flomemos">
   <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body>
@@ -16,75 +20,75 @@
       <div class="auth-brand">
         <span class="brand-logo">浮</span>
         <h1>Flomemos</h1>
-        <p class="auth-subtitle">轻记录，像发消息一样简单</p>
+        <p class="auth-subtitle" data-i18n="auth.tagline">轻记录，像发消息一样简单</p>
       </div>
 
       <div id="auth-tabs" class="auth-tabs">
-        <button type="button" class="auth-tab active" data-tab="login">登录</button>
-        <button type="button" class="auth-tab" data-tab="register">注册</button>
-        <button type="button" class="auth-tab" data-tab="reset">找回密码</button>
+        <button type="button" class="auth-tab active" data-tab="login" data-i18n="auth.tabLogin">登录</button>
+        <button type="button" class="auth-tab" data-tab="register" data-i18n="auth.tabRegister">注册</button>
+        <button type="button" class="auth-tab" data-tab="reset" data-i18n="auth.tabReset">找回密码</button>
       </div>
 
       <form id="login-form" autocomplete="on">
         <label class="field">
-          <span>邮箱</span>
+          <span data-i18n="auth.email">邮箱</span>
           <input type="email" id="login-email" name="email" autocomplete="email" required>
         </label>
         <label class="field">
-          <span>密码</span>
+          <span data-i18n="auth.password">密码</span>
           <input type="password" id="login-password" name="password" autocomplete="current-password" required>
         </label>
         <p id="login-error" class="form-error hidden"></p>
-        <button type="submit" class="btn btn-primary btn-block" id="login-submit">登 录</button>
+        <button type="submit" class="btn btn-primary btn-block" id="login-submit" data-i18n="btn.login">登 录</button>
       </form>
 
       <form id="register-form" class="hidden" autocomplete="off">
-        <p id="register-hint" class="setup-hint hidden">🎉 你是第一位注册的用户，将自动成为本站管理员</p>
+        <p id="register-hint" class="setup-hint hidden" data-i18n="auth.adminHint">🎉 你是第一位注册的用户，将自动成为本站管理员</p>
         <label class="field">
-          <span>邮箱</span>
+          <span data-i18n="auth.email">邮箱</span>
           <input type="email" id="register-email" required>
         </label>
         <label class="field">
-          <span>邮箱验证码</span>
+          <span data-i18n="auth.code">邮箱验证码</span>
           <span class="code-row">
-            <input type="text" id="register-code" inputmode="numeric" maxlength="4" placeholder="4 位数字" required>
-            <button type="button" id="register-send" class="btn btn-ghost send-btn">发送验证码</button>
+            <input type="text" id="register-code" inputmode="numeric" maxlength="4" data-i18n-placeholder="auth.codePlaceholder" placeholder="4 位数字" required>
+            <button type="button" id="register-send" class="btn btn-ghost send-btn" data-i18n="btn.sendCode">发送验证码</button>
           </span>
         </label>
         <label class="field">
-          <span>密码（至少 6 位）</span>
+          <span data-i18n="auth.passwordHint">密码（至少 6 位）</span>
           <input type="password" id="register-password" minlength="6" maxlength="128" required>
         </label>
         <label class="field">
-          <span>确认密码</span>
+          <span data-i18n="auth.password2">确认密码</span>
           <input type="password" id="register-password2" minlength="6" maxlength="128" required>
         </label>
         <p id="register-error" class="form-error hidden"></p>
-        <button type="submit" class="btn btn-primary btn-block">注册并进入</button>
+        <button type="submit" class="btn btn-primary btn-block" data-i18n="btn.register">注册并进入</button>
       </form>
 
       <form id="reset-form" class="hidden" autocomplete="off">
-        <p class="setup-hint">输入注册邮箱，我们会发送 4 位数字验证码用于重置密码。</p>
+        <p class="setup-hint" data-i18n="auth.resetHint">输入注册邮箱，我们会发送 4 位数字验证码用于重置密码。</p>
         <label class="field">
-          <span>邮箱</span>
+          <span data-i18n="auth.email">邮箱</span>
           <input type="email" id="reset-email" required>
         </label>
         <label class="field">
-          <span>邮箱验证码</span>
+          <span data-i18n="auth.code">邮箱验证码</span>
           <span class="code-row">
-            <input type="text" id="reset-code" inputmode="numeric" maxlength="4" placeholder="4 位数字" required>
-            <button type="button" id="reset-send" class="btn btn-ghost send-btn">发送验证码</button>
+            <input type="text" id="reset-code" inputmode="numeric" maxlength="4" data-i18n-placeholder="auth.codePlaceholder" placeholder="4 位数字" required>
+            <button type="button" id="reset-send" class="btn btn-ghost send-btn" data-i18n="btn.sendCode">发送验证码</button>
           </span>
         </label>
         <label class="field">
-          <span>新密码（至少 6 位）</span>
+          <span data-i18n="auth.newPasswordHint">新密码（至少 6 位）</span>
           <input type="password" id="reset-password" minlength="6" maxlength="128" required>
         </label>
         <p id="reset-error" class="form-error hidden"></p>
-        <button type="submit" class="btn btn-primary btn-block">重置密码</button>
+        <button type="submit" class="btn btn-primary btn-block" data-i18n="btn.reset">重置密码</button>
       </form>
     </div>
-    <p class="auth-footer">Flomemos · 私有部署 · 运行于 Cloudflare Workers</p>
+    <p class="auth-footer" data-i18n="auth.footer">Flomemos · 私有部署 · 运行于 Cloudflare Workers</p>
   </div>
 
   <!-- 主视图 -->
@@ -98,23 +102,28 @@
       </div>
 
       <nav class="nav">
-        <button class="nav-item active" data-nav="all">📝 全部笔记 <span class="nav-count" id="count-total"></span></button>
-        <button class="nav-item" data-nav="pinned">⭐ 收藏</button>
-        <button class="nav-item" data-nav="review">🎲 随机回顾</button>
-        <button class="nav-item" data-nav="stats">📊 统计</button>
-        <button class="nav-item hidden" data-nav="admin" id="nav-admin">👥 用户管理</button>
+        <button class="nav-item active" data-nav="all"><span data-i18n="nav.all">📝 全部笔记</span> <span class="nav-count" id="count-total"></span></button>
+        <button class="nav-item" data-nav="pinned"><span data-i18n="nav.pinned">⭐ 收藏</span></button>
+        <button class="nav-item hidden" data-nav="trash" id="nav-trash"><span data-i18n="nav.trash">🗑 回收站</span></button>
+        <button class="nav-item hidden" data-nav="batch" id="nav-batch"><span data-i18n="nav.batch">☑ 多选</span></button>
+        <button class="nav-item" data-nav="review"><span data-i18n="nav.review">🎲 随机回顾</span></button>
+        <button class="nav-item" data-nav="stats"><span data-i18n="nav.stats">📊 统计</span></button>
+        <button class="nav-item hidden" data-nav="admin" id="nav-admin"><span data-i18n="nav.admin">👥 用户管理</span></button>
       </nav>
 
       <div class="side-section">
-        <div class="side-title">标签</div>
-        <div id="tag-list" class="tag-list"><p class="tag-empty">暂无标签，在笔记里用 #标签 即可创建</p></div>
+        <div class="side-title" data-i18n="side.tags">标签</div>
+        <div id="tag-list" class="tag-list"></div>
       </div>
 
       <div class="side-footer">
-        <button id="theme-toggle" class="side-link">🌙 夜间模式</button>
-        <button id="export-md" class="side-link">⬇️ 导出 Markdown</button>
-        <button id="export-json" class="side-link">⬇️ 导出 JSON</button>
-        <button id="logout" class="side-link danger">↩ 退出登录</button>
+        <button id="theme-toggle" class="side-link">🌓 跟随系统</button>
+        <button id="lang-toggle" class="side-link">🌐 EN</button>
+        <button id="export-md" class="side-link" data-i18n="side.exportMd">⬇️ 导出 Markdown</button>
+        <button id="export-json" class="side-link" data-i18n="side.exportJson">⬇️ 导出 JSON</button>
+        <button id="import-btn" class="side-link" data-i18n="side.import">📥 导入</button>
+        <input type="file" id="import-input" accept=".md,.json,.markdown" hidden>
+        <button id="logout" class="side-link danger" data-i18n="side.logout">↩ 退出登录</button>
         <div id="side-user" class="side-user"></div>
       </div>
     </aside>
@@ -134,6 +143,8 @@
           <button id="filter-clear" class="icon-btn" title="取消过滤">✕</button>
         </section>
 
+        <section id="selected-bar" class="selected-bar hidden"></section>
+
         <section id="editor-mount"></section>
 
         <section id="memo-list" class="memo-list" aria-live="polite"></section>
@@ -148,9 +159,13 @@
     <div class="modal-mask" data-close="review-modal"></div>
     <div class="modal-dialog">
       <header class="modal-head">
-        <h2>🎲 随机回顾</h2>
+        <h2 data-i18n="review.title">🎲 随机回顾</h2>
         <div class="modal-actions">
-          <button id="review-refresh" class="btn btn-ghost">换一批</button>
+          <select id="review-num" class="review-num">
+            <option value="5">5 条</option>
+            <option value="10">10 条</option>
+          </select>
+          <button id="review-refresh" class="btn btn-ghost" data-i18n="review.refresh">换一批</button>
           <button class="icon-btn" data-close="review-modal" title="关闭">✕</button>
         </div>
       </header>
@@ -163,7 +178,7 @@
     <div class="modal-mask" data-close="stats-modal"></div>
     <div class="modal-dialog">
       <header class="modal-head">
-        <h2>📊 统计</h2>
+        <h2 data-i18n="stats.title">📊 统计</h2>
         <div class="modal-actions">
           <button class="icon-btn" data-close="stats-modal" title="关闭">✕</button>
         </div>
@@ -177,9 +192,10 @@
     <div class="modal-mask" data-close="admin-modal"></div>
     <div class="modal-dialog">
       <header class="modal-head">
-        <h2>👥 用户管理</h2>
+        <h2 data-i18n="admin.title">👥 用户管理</h2>
         <div class="modal-actions">
-          <button id="admin-refresh" class="btn btn-ghost">刷新</button>
+          <input type="search" id="admin-search" class="admin-search" placeholder="搜索邮箱…">
+          <button id="admin-refresh" class="btn btn-ghost" data-i18n="admin.refresh">刷新</button>
           <button class="icon-btn" data-close="admin-modal" title="关闭">✕</button>
         </div>
       </header>

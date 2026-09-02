@@ -1,0 +1,12 @@
+{
+  "name": "Flomemos",
+  "short_name": "Flomemos",
+  "description": "Lightweight note-taking app, Cloudflare-flavored",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f5f1",
+  "theme_color": "#0aa870",
+  "icons": [
+    { "src": "/assets/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
