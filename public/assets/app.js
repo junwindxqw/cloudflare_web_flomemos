@@ -14,7 +14,8 @@ const state = {
   tag: '',
   tagsFilter: '',
   tagsSort: localStorage.getItem('fm-tags-sort') || 'count',
-  q: [],
+  q: '',
+  batchMode: false,
   memos: [],
   hasMore: false,
   nextBefore: 0,
@@ -479,7 +480,7 @@ function renderMemoCard(memo) {
   card.className = 'memo-card';
   card.dataset.id = memo.id;
 
-  if (state.selected.size > 0) {
+  if (state.batchMode) {
     const sel = document.createElement('input');
     sel.type = 'checkbox';
     sel.className = 'memo-check';
@@ -661,7 +662,8 @@ async function purgeMemo(memo) {
 async function shareMemo(memo) {
   try {
     const res = await api('/api/memos/' + memo.id + '/share', { method: 'POST' });
-    const url = location.origin + res.url;
+    // /s/<token> 是可读 HTML 页；.json 后缀留给 API 调用方
+    const url = location.origin + res.url.replace(/\.json$/, '');
     try { await navigator.clipboard.writeText(url); } catch {}
     memo.shared = true;
     renderMemoList();
@@ -940,7 +942,7 @@ function renderSelectedBar() {
     });
     state.selected.clear(); reloadMemos();
   }, 'danger'));
-  bar.appendChild(batchBtn('取消', () => { state.selected.clear(); renderSelectedBar(); renderMemoList(); }));
+  bar.appendChild(batchBtn('取消', () => { state.batchMode = false; state.selected.clear(); renderSelectedBar(); renderMemoList(); }));
 }
 function batchBtn(label, onClick, kind) {
   const b = document.createElement('button');
@@ -980,13 +982,12 @@ function bindNav() {
       } else if (nav === 'admin') {
         openAdmin();
       } else if (nav === 'batch') {
-        // 切到批量模式：再点一次退出
-        if (state.selected.size > 0) {
-          state.selected.clear(); renderMemoList(); renderSelectedBar();
-        } else {
-          state.selected.clear(); renderMemoList(); renderSelectedBar();
-          toast('点击笔记左侧复选框开始批量选择');
-        }
+        // 切换批量模式：开启后所有卡片显示复选框；再点一次(或清除所选)退出
+        state.batchMode = !state.batchMode;
+        state.selected.clear();
+        renderMemoList();
+        renderSelectedBar();
+        if (state.batchMode) toast('已进入多选模式：勾选笔记后使用上方操作栏');
       }
     });
   });

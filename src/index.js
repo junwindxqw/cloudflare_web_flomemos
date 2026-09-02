@@ -896,7 +896,6 @@ async function exportData(request, env, url, user) {
 }
 
 async function importData(request, env, user) {
-  if (!env.R2 && false) {} // 占位保持结构
   let form;
   try {
     form = await request.formData();
@@ -979,20 +978,66 @@ async function unshareMemo(request, env, user, id) {
 }
 
 async function serveSharedMemo(env, url) {
-  const match = url.pathname.match(/^\/s\/([A-Za-z0-9]+)\.json$/);
+  const match = url.pathname.match(/^\/s\/([A-Za-z0-9]+)(\.json)?$/);
   if (!match) return errorJson(404, '链接无效');
   const token = match[1];
   const row = await env.DB.prepare('SELECT s.memo_id, s.expires_at, m.content, m.created_at, m.user_id FROM share_links s JOIN memos m ON m.id = s.memo_id WHERE s.token = ? AND m.deleted_at IS NULL').bind(token).first();
   if (!row) return errorJson(404, '笔记不存在');
   if (row.expires_at && row.expires_at < Date.now()) return errorJson(410, '链接已过期');
   const tagsRow = await env.DB.prepare('SELECT tag FROM tags WHERE memo_id = ?').bind(row.memo_id).all();
-  return json({
-    memo: {
-      content: row.content,
-      tags: (tagsRow.results || []).map((r) => r.tag),
-      created_at: row.created_at,
-    },
-  });
+  const tags = (tagsRow.results || []).map((r) => r.tag);
+
+  // .json 保留给 API 调用方；默认返回自包含只读 HTML（零 JS，内容全转义）
+  if (match[2] === '.json') {
+    return json({
+      memo: { content: row.content, tags, created_at: row.created_at },
+    });
+  }
+  const headers = new Headers({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=60' });
+  applySecurityHeaders(headers);
+  return new Response(renderSharePage(row.content, tags, row.created_at), { headers });
+}
+
+// 公开分享页：服务端渲染静态 HTML，不加载任何脚本
+function htmlEscape(text) {
+  return String(text ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function renderSharePage(content, tags, createdAt) {
+  const TAG_RE = /#([\p{L}\p{N}_\-/]+)/gu;
+  // 转义后再把 #标签 包成高亮 span（正则作用于已转义文本，标签字符集不含 &;'"，安全）
+  const escaped = htmlEscape(content);
+  const bodyHtml = escaped.replace(TAG_RE, (m) => '<span class="tag">' + m + '</span>');
+  const time = new Date(createdAt).toLocaleString('zh-CN', { hour12: false });
+  const title = (content.replace(/\s+/g, ' ').trim().slice(0, 30) || '笔记') + ' · Flomemos';
+  const tagsHtml = tags.length
+    ? '<div class="tags">' + tags.map((t) => '<span class="chip">#' + htmlEscape(t) + '</span>').join('') + '</div>'
+    : '';
+  return '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="UTF-8">'
+    + '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+    + '<meta name="robots" content="noindex">'
+    + '<title>' + htmlEscape(title) + '</title>'
+    + '<style>'
+    + 'body{margin:0;background:#f6f5f1;color:#2b2b28;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;line-height:1.8}'
+    + '.card{max-width:640px;margin:48px auto;background:#fff;border:1px solid #e8e6df;border-radius:14px;padding:28px 30px;box-shadow:0 4px 16px rgba(40,40,30,.08)}'
+    + '.brand{font-weight:700;color:#0aa870;margin-bottom:14px;font-size:15px}'
+    + '.content{white-space:pre-wrap;word-break:break-word;font-size:15.5px}'
+    + '.tag{color:#0aa870;background:rgba(10,168,112,.08);border-radius:4px;padding:0 3px}'
+    + '.tags{margin-top:16px;display:flex;flex-wrap:wrap;gap:6px}'
+    + '.chip{font-size:12.5px;color:#0aa870;background:rgba(10,168,112,.1);border-radius:6px;padding:2px 10px}'
+    + '.time{margin-top:18px;color:#9b9a92;font-size:12.5px}'
+    + '@media (prefers-color-scheme:dark){body{background:#191b1e;color:#e8e6e1}.card{background:#222529;border-color:#323539}.tag,.chip{color:#2bd193}}'
+    + '</style></head><body>'
+    + '<div class="card"><div class="brand">浮 Flomemos</div>'
+    + '<div class="content">' + bodyHtml + '</div>'
+    + tagsHtml
+    + '<div class="time">' + htmlEscape(time) + '</div>'
+    + '</div></body></html>';
 }
 
 // ---------- 搜索 ----------
@@ -1192,8 +1237,11 @@ export default {
     const start = Date.now();
     let status = 500;
     try {
-      // ensureSchema 异步后台跑；不阻塞请求
-      ensureSchema(env.DB);
+      // 等待 schema 就绪（正常几百 ms；上限 3s 防止异常环境挂住请求，超时后迁移继续后台跑）
+      await Promise.race([
+        ensureSchema(env.DB),
+        new Promise((resolve) => setTimeout(resolve, 3000)),
+      ]);
       const url = new URL(request.url);
       const secure = isSecureRequest(request, url);
       // /api/* 由本 Worker 处理

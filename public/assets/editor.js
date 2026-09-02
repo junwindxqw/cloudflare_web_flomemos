@@ -177,6 +177,7 @@ export class MarkdownEditor {
     input.addEventListener('input', () => {
       this.updateCount();
       this.updateSuggest();
+      if (this.opts.onChange) this.opts.onChange(this.input.value);
       if (this.previewOn) this.renderPreviewSoon();
     });
     input.addEventListener('paste', (e) => {
