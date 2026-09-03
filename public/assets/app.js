@@ -4,6 +4,14 @@ import { api, ApiError } from './api.js';
 import { renderMemoHtml, escapeHtml } from './md.js';
 import { MarkdownEditor } from './editor.js';
 import { t, setLocale, getLocale, supportedLocales } from './i18n.js';
+import {
+  buildTagTree,
+  sortedChildren,
+  lastSegment,
+  nodeMatches,
+  hasMatchingDescendant,
+  collectExpandedAncestors,
+} from './tagTree.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -711,6 +719,9 @@ function editMemo(card, memo) {
 }
 
 // ---------------- 标签 ----------------
+// 折叠状态：每个父级标签一个布尔值（默认折叠）。不持久化 —— 刷新后保持默认即可。
+const tagExpanded = new Set();
+
 async function refreshTags() {
   try {
     const res = await api('/api/tags?sort=' + encodeURIComponent(state.tagsSort));
@@ -763,31 +774,62 @@ function renderTagList() {
     list.appendChild(p);
     return;
   }
+
+  const tree = buildTagTree(state.tags);
   renderTagItems();
 
   function renderTagItems() {
     list.innerHTML = '';
     const filter = state.tagsFilter.toLowerCase();
-    for (const t of state.tags) {
-      if (filter && !t.tag.toLowerCase().includes(filter)) continue;
-      const depth = (t.tag.match(/\//g) || []).length;
-      const item = document.createElement('button');
-      item.className = 'tag-item' + (state.view === 'tag' && state.tag === t.tag ? ' active' : '');
+    // 搜索命中时临时记录"需展开的祖先"
+    if (filter) collectExpandedAncestors(tree, filter, tagExpanded);
+    renderNode(tree, 0, filter);
+  }
+
+  function renderNode(node, depth, filter) {
+    const children = sortedChildren(node, sortSel.value);
+    for (const child of children) {
+      const isParent = child.children.size > 0;
+      if (filter && !nodeMatches(child, filter) && !hasMatchingDescendant(child, filter)) continue;
+      const item = document.createElement('div');
+      item.className = 'tag-item';
+      if (state.view === 'tag' && state.tag === child.tag) item.classList.add('active');
       item.style.paddingLeft = 6 + depth * 14 + 'px';
-      const name = document.createElement('span');
+      // 折叠箭头（仅父级显示）
+      if (isParent) {
+        const toggle = document.createElement('button');
+        toggle.className = 'tag-toggle';
+        toggle.textContent = tagExpanded.has(child.tag) ? '▾' : '▸';
+        toggle.title = tagExpanded.has(child.tag) ? '折叠子标签' : '展开子标签';
+        toggle.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (tagExpanded.has(child.tag)) tagExpanded.delete(child.tag);
+          else tagExpanded.add(child.tag);
+          renderTagItems();
+        });
+        item.appendChild(toggle);
+      } else {
+        const spacer = document.createElement('span');
+        spacer.className = 'tag-toggle-spacer';
+        item.appendChild(spacer);
+      }
+      const name = document.createElement('button');
       name.className = 'tag-name';
-      name.textContent = '#' + t.tag;
+      name.textContent = '#' + lastSegment(child.tag);
+      name.addEventListener('click', () => filterByTag(child.tag));
+      name.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        openTagMenu(child.tag, e.clientX, e.clientY);
+      });
       item.appendChild(name);
       const count = document.createElement('span');
       count.className = 'tag-count';
-      count.textContent = t.count;
+      count.textContent = child.count;
       item.appendChild(count);
-      item.addEventListener('click', () => filterByTag(t.tag));
-      item.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        openTagMenu(t.tag, e.clientX, e.clientY);
-      });
       list.appendChild(item);
+      if (isParent && (tagExpanded.has(child.tag) || filter)) {
+        renderNode(child, depth + 1, filter);
+      }
     }
   }
 }
