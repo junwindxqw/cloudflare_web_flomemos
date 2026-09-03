@@ -188,26 +188,45 @@ input, textarea {
   margin: 4px 0 10px;
 }
 
-/* 验证码输入行 */
+/* 验证码输入行：发送按钮嵌入到输入框右侧 */
 .code-row {
-  display: flex;
-  gap: 8px;
+  position: relative;
 }
 .code-row input {
-  flex: 1;
-  min-width: 0;
+  width: 100%;
+  /* 给按钮预留位置（不挤压视觉中心），同时让 placeholder / 数字居中 */
+  padding-right: 96px;
   letter-spacing: 6px;
   font-size: 16px;
   text-align: center;
 }
 .code-row .send-btn {
-  flex-shrink: 0;
-  padding: 0 12px;
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  height: calc(100% - 8px);
+  padding: 0 14px;
   font-size: 13px;
+  font-weight: 500;
+  color: var(--accent);
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0 9px 9px 0;
+  cursor: pointer;
   white-space: nowrap;
+  transition: color 0.15s, background 0.15s;
+}
+.code-row .send-btn:hover:not(:disabled) {
+  color: var(--accent-strong);
+  background: var(--accent-weak);
+}
+.code-row .send-btn:active:not(:disabled) {
+  background: var(--accent-softer);
 }
 .code-row .send-btn:disabled {
-  opacity: 0.55;
+  color: var(--muted);
   cursor: not-allowed;
 }
 .setup-hint {
