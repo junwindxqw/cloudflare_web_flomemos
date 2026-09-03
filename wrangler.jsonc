@@ -3,6 +3,12 @@
   "name": "flomemos",
   "main": "src/index.js",
   "compatibility_date": "2026-08-01",
+  "routes": [
+    {
+      "pattern": "flomemos.junwind.site",
+      "custom_domain": true
+    }
+  ],
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
