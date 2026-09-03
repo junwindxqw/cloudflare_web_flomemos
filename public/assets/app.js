@@ -131,7 +131,7 @@ function clearDraft() {
 const AUTH_FORMS = { login: 'login-form', register: 'register-form', reset: 'reset-form' };
 
 function setAuthTab(mode) {
-  // 1. 先让所有 tab 按钮失去焦点，避免后续 click 被焦点恢复流程吞掉
+  // 切显隐前先让所有 tab 按钮失去焦点，避免浏览器 focus 恢复流程干扰后续 click
   const active = document.activeElement;
   if (active && active.classList && active.classList.contains('auth-tab')) active.blur();
   document.querySelectorAll('.auth-tab').forEach((b) => {
@@ -140,29 +140,16 @@ function setAuthTab(mode) {
   for (const [tab, formId] of Object.entries(AUTH_FORMS)) {
     const form = $('#' + formId);
     if (!form) continue;
-    const wasHidden = form.classList.contains('hidden');
-    const shouldHide = tab !== mode;
-    form.classList.toggle('hidden', shouldHide);
-    // 切换为显示时清空错误并把焦点放下一帧，避免与 click 焦点竞争
-    if (wasHidden && !shouldHide) {
-      const errId = formId.replace('-form', '-error');
-      const err = $('#' + errId);
-      if (err) err.classList.add('hidden');
-    }
+    form.classList.toggle('hidden', tab !== mode);
   }
-  // 焦点延后到下一帧再设置，确保 DOM 已渲染完毕
-  requestAnimationFrame(() => {
-    const sel = mode === 'login' ? '#login-email' : mode === 'register' ? '#register-email' : '#reset-email';
-    const el = $(sel);
-    if (el) el.focus({ preventScroll: true });
-  });
 }
 
 function showAuth(opts = {}) {
   const mode = opts.mode || 'login';
   $('#auth-view').classList.remove('hidden');
   $('#main-view').classList.add('hidden');
-  $('#auth-tabs').classList.toggle('hidden', opts.hideTabs);
+  // 三个 tab 按钮始终可见，确保用户任何状态下都能切到任意其它 tab
+  $('#auth-tabs').classList.remove('hidden');
   setAuthTab(mode);
   $('#register-hint').classList.toggle('hidden', !opts.showAdminHint);
   for (const id of ['login-error', 'register-error', 'reset-error']) $('#' + id).classList.add('hidden');
@@ -225,7 +212,7 @@ async function boot() {
   try {
     const me = await api('/api/me');
     if (me.authenticated) enterApp({ email: me.email, role: me.role });
-    else showAuth({ mode: me.hasUsers ? 'login' : 'register', hideTabs: !me.hasUsers, showAdminHint: !me.hasUsers });
+    else showAuth({ mode: me.hasUsers ? 'login' : 'register', showAdminHint: !me.hasUsers });
   } catch (err) {
     showAuth({ mode: 'login' });
     toast(err.message || '加载失败', 'error');
@@ -285,8 +272,7 @@ async function sendAuthCode(kind) {
 
 function bindAuthForms() {
   document.querySelectorAll('.auth-tab').forEach((b) => {
-    b.addEventListener('click', (e) => {
-      e.preventDefault();
+    b.addEventListener('click', () => {
       const mode = b.dataset.tab;
       if (!AUTH_FORMS[mode]) return; // 忽略未知 tab
       const hintShown = !$('#register-hint').classList.contains('hidden');
