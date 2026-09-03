@@ -131,12 +131,31 @@ function clearDraft() {
 const AUTH_FORMS = { login: 'login-form', register: 'register-form', reset: 'reset-form' };
 
 function setAuthTab(mode) {
+  // 1. 先让所有 tab 按钮失去焦点，避免后续 click 被焦点恢复流程吞掉
+  const active = document.activeElement;
+  if (active && active.classList && active.classList.contains('auth-tab')) active.blur();
   document.querySelectorAll('.auth-tab').forEach((b) => {
     b.classList.toggle('active', b.dataset.tab === mode);
   });
   for (const [tab, formId] of Object.entries(AUTH_FORMS)) {
-    $('#' + formId).classList.toggle('hidden', tab !== mode);
+    const form = $('#' + formId);
+    if (!form) continue;
+    const wasHidden = form.classList.contains('hidden');
+    const shouldHide = tab !== mode;
+    form.classList.toggle('hidden', shouldHide);
+    // 切换为显示时清空错误并把焦点放下一帧，避免与 click 焦点竞争
+    if (wasHidden && !shouldHide) {
+      const errId = formId.replace('-form', '-error');
+      const err = $('#' + errId);
+      if (err) err.classList.add('hidden');
+    }
   }
+  // 焦点延后到下一帧再设置，确保 DOM 已渲染完毕
+  requestAnimationFrame(() => {
+    const sel = mode === 'login' ? '#login-email' : mode === 'register' ? '#register-email' : '#reset-email';
+    const el = $(sel);
+    if (el) el.focus({ preventScroll: true });
+  });
 }
 
 function showAuth(opts = {}) {
@@ -152,7 +171,6 @@ function showAuth(opts = {}) {
     $(errSel).textContent = opts.message;
     $(errSel).classList.remove('hidden');
   }
-  $(mode === 'login' ? '#login-email' : mode === 'register' ? '#register-email' : '#reset-email').focus();
 }
 
 function showMain() {
@@ -267,9 +285,12 @@ async function sendAuthCode(kind) {
 
 function bindAuthForms() {
   document.querySelectorAll('.auth-tab').forEach((b) => {
-    b.addEventListener('click', () => {
+    b.addEventListener('click', (e) => {
+      e.preventDefault();
+      const mode = b.dataset.tab;
+      if (!AUTH_FORMS[mode]) return; // 忽略未知 tab
       const hintShown = !$('#register-hint').classList.contains('hidden');
-      showAuth({ mode: b.dataset.tab, showAdminHint: hintShown });
+      showAuth({ mode, showAdminHint: hintShown });
     });
   });
 
