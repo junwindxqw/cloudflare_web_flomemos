@@ -12,7 +12,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # jsdom 30 内置 undici 8 依赖 Node 22+ 的 util.markAsUncloneable
+          node-version: '22'
           cache: 'npm'
       - run: npm ci
       - run: npm test
