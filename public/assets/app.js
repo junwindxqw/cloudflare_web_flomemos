@@ -12,14 +12,23 @@ import {
   hasMatchingDescendant,
   collectExpandedAncestors,
 } from './tagTree.js';
+import {
+  buildFolderTree,
+  flattenFolders,
+  collectDescendantIds,
+} from './folderTree.js';
 
 const $ = (sel) => document.querySelector(sel);
 
 const state = {
   email: '',
   role: 'user',
-  view: 'all', // all | pinned | tag | trash
+  view: 'all', // all | pinned | tag | folder | trash
   tag: '',
+  folder: null, // 目录过滤：目录 id 或 'none'（未归类）
+  folders: [], // [{ id, parent_id, name, count }]
+  unfiledCount: 0,
+  folderOptions: [], // 平铺后的目录树（用于编辑器下拉）
   tagsFilter: '',
   tagsSort: localStorage.getItem('fm-tags-sort') || 'count',
   q: '',
@@ -31,6 +40,7 @@ const state = {
   tags: [],
   selected: new Set(), // 多选
   previewOpen: false,
+  expanded: new Set(), // 长笔记手动展开的 memo id（跨重渲染保持）
 };
 
 // ---------------- 工具 ----------------
@@ -176,6 +186,7 @@ function enterApp(user) {
   showMain();
   mountEditor();
   refreshTags();
+  refreshFolders();
   reloadMemos();
   updateTotalCount();
 }
@@ -349,16 +360,19 @@ function mountEditor() {
     submitText: '记录',
     getTags: () => state.tags.map((t) => t.tag),
     uploadImage: uploadImage,
+    folders: () => state.folderOptions,
+    getFolderId: () => (state.view === 'folder' && state.folder !== 'none' ? state.folder : null),
     initial: draft,
     onChange: (text) => saveDraft(text),
-    onSubmit: async (text) => {
-      const res = await api('/api/memos', { method: 'POST', body: { content: text } });
+    onSubmit: async (text, folderId) => {
+      const res = await api('/api/memos', { method: 'POST', body: { content: text, folderId } });
       clearDraft();
-      await refreshTags();
+      await Promise.all([refreshTags(), refreshFolders()]);
       updateTotalCount();
       if (state.view === 'trash') {
         // 切回全部
         state.view = 'all';
+        state.folder = null;
         setNavActive('all');
       }
       if (isFreshList()) {
@@ -422,6 +436,7 @@ async function loadMore() {
     if (state.nextBefore) params.set('before', String(state.nextBefore));
     if (state.view === 'pinned') params.set('pinned', '1');
     if (state.view === 'tag' && state.tag) params.set('tag', state.tag);
+    if (state.view === 'folder' && state.folder !== null) params.set('folder', String(state.folder));
 
     const res = await api('/api/memos?' + params.toString());
     state.memos = state.memos.concat(res.memos);
@@ -443,6 +458,9 @@ function updateFilterBar() {
   if (state.view === 'tag' && state.tag) {
     chip.textContent = '标签：#' + state.tag;
     bar.classList.remove('hidden');
+  } else if (state.view === 'folder' && state.folder !== null) {
+    chip.textContent = '目录：' + folderDisplayName(state.folder);
+    bar.classList.remove('hidden');
   } else if (state.view === 'trash') {
     chip.textContent = '回收站（30 天内可恢复）';
     bar.classList.remove('hidden');
@@ -452,6 +470,12 @@ function updateFilterBar() {
   } else {
     bar.classList.add('hidden');
   }
+}
+
+function folderDisplayName(folderId) {
+  if (folderId === 'none') return '未归类';
+  const f = state.folders.find((x) => x.id === folderId);
+  return f ? f.name : '未知目录';
 }
 
 function renderMemoList() {
@@ -464,6 +488,8 @@ function renderMemoList() {
     empty.className = 'list-empty';
     if (state.view === 'trash') {
       empty.innerHTML = '<p>回收站是空的</p>';
+    } else if (state.view === 'folder' && state.folder !== null) {
+      empty.innerHTML = '<p>该目录还没有笔记</p>';
     } else if (state.q) {
       empty.innerHTML = '<p>没有找到与「' + escapeHtml(state.q) + '」相关的笔记</p><button class="btn btn-ghost btn-sm" id="empty-clear-search">清除搜索</button>';
     } else {
@@ -485,7 +511,9 @@ function renderMemoList() {
       head.textContent = info.label;
       list.appendChild(head);
     }
-    list.appendChild(renderMemoCard(memo));
+    const card = renderMemoCard(memo);
+    list.appendChild(card);
+    applyMemoFold(card, memo);
   }
   $('#sentinel').classList.toggle('hidden', !state.hasMore || state.view === 'trash');
 }
@@ -519,6 +547,18 @@ function renderMemoCard(memo) {
 
   const tags = document.createElement('span');
   tags.className = 'memo-tags';
+  // 目录徽章（有目录时展示，点击即按目录过滤）
+  if (memo.folder_id !== null && memo.folder_id !== undefined) {
+    const folderBtn = document.createElement('a');
+    folderBtn.className = 'folder-chip';
+    folderBtn.href = '#';
+    folderBtn.textContent = '📁 ' + folderDisplayName(memo.folder_id);
+    folderBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      filterByFolder(memo.folder_id);
+    });
+    tags.appendChild(folderBtn);
+  }
   for (const tag of memo.tags) {
     const a = document.createElement('a');
     a.className = 'tag-chip';
@@ -579,6 +619,49 @@ function actionBtn(icon, title, onClick) {
   b.setAttribute('aria-label', title);
   b.addEventListener('click', onClick);
   return b;
+}
+
+// ---------------- 长笔记自动折叠 ----------------
+const FOLD_THRESHOLD = 340; // 内容渲染高度超过该值（px）自动折叠
+
+function applyMemoFold(card, memo) {
+  const body = card.querySelector('.memo-content');
+  if (!body) return;
+
+  let toggle = card.querySelector('.memo-fold-toggle');
+  if (!toggle) {
+    toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'memo-fold-toggle';
+    toggle.addEventListener('click', () => {
+      if (state.expanded.has(memo.id)) state.expanded.delete(memo.id);
+      else state.expanded.add(memo.id);
+      updateFoldState(card, memo);
+    });
+    card.appendChild(toggle);
+  }
+
+  const check = () => {
+    const tall = body.scrollHeight > FOLD_THRESHOLD;
+    card.classList.toggle('foldable', tall);
+    toggle.classList.toggle('hidden', !tall);
+    updateFoldState(card, memo);
+  };
+  check();
+  // 图片懒加载完成后高度会变，重新判定
+  body.querySelectorAll('img').forEach((img) => {
+    if (!img.complete) img.addEventListener('load', check, { once: true });
+  });
+}
+
+function updateFoldState(card, memo) {
+  const expanded = state.expanded.has(memo.id);
+  card.classList.toggle('memo-folded', !expanded);
+  const toggle = card.querySelector('.memo-fold-toggle');
+  if (toggle) {
+    toggle.textContent = expanded ? '收起 ▴' : '展开全文 ▾';
+    toggle.classList.toggle('expanded', expanded);
+  }
 }
 
 // 搜索命中高亮：遍历文本节点，把 q 的出现处包上 <mark>（跳过代码/链接/已有标记）
@@ -710,11 +793,15 @@ function editMemo(card, memo) {
     compact: true,
     getTags: () => state.tags.map((t) => t.tag),
     uploadImage: uploadImage,
-    onSubmit: async (text) => {
-      const res = await api('/api/memos/' + memo.id, { method: 'PUT', body: { content: text } });
+    folders: () => state.folderOptions,
+    folderId: memo.folder_id ?? null,
+    onSubmit: async (text, folderId) => {
+      const res = await api('/api/memos/' + memo.id, { method: 'PUT', body: { content: text, folderId } });
       Object.assign(memo, res.memo);
-      await refreshTags();
-      renderMemoList();
+      await Promise.all([refreshTags(), refreshFolders()]);
+      // 目录过滤下编辑可能把笔记移出当前范围，需按服务端结果重载
+      if (state.view === 'folder') await reloadMemos();
+      else renderMemoList();
       toast('已保存 ✅');
       return true;
     },
@@ -904,12 +991,227 @@ async function deleteTagPrompt(tag) {
 function filterByTag(tag) {
   state.view = 'tag';
   state.tag = tag;
+  state.folder = null;
   state.q = '';
   $('#search-input').value = '';
   $('#search-clear').classList.add('hidden');
   setNavActive(null);
   closeSidebar();
   renderTagList();
+  if (mainEditor && mainEditor.refreshFolderOptions) mainEditor.refreshFolderOptions();
+  reloadMemos();
+}
+
+// ---------------- 目录（文件夹层级，独立于标签） ----------------
+// 折叠状态：目录 id -> 展开。刷新后保持默认折叠。
+const folderExpanded = new Set();
+
+async function refreshFolders() {
+  try {
+    const res = await api('/api/folders');
+    state.folders = res.folders || [];
+    state.unfiledCount = res.unfiled || 0;
+    const tree = buildFolderTree(state.folders);
+    state.folderOptions = flattenFolders(tree);
+    renderFolderList();
+    if (mainEditor && mainEditor.refreshFolderOptions) mainEditor.refreshFolderOptions();
+  } catch {
+    // 忽略
+  }
+}
+
+function renderFolderList() {
+  const wrap = $('#folder-list');
+  wrap.innerHTML = '';
+  const tree = buildFolderTree(state.folders);
+
+  const renderItem = (node, depth) => {
+    const isParent = node.children.length > 0;
+    const item = document.createElement('div');
+    item.className = 'folder-item' + (state.view === 'folder' && state.folder === node.id ? ' active' : '');
+    item.style.paddingLeft = 6 + depth * 14 + 'px';
+
+    const toggle = document.createElement('button');
+    toggle.className = 'tag-toggle';
+    if (isParent) {
+      toggle.textContent = folderExpanded.has(node.id) ? '▾' : '▸';
+      toggle.title = folderExpanded.has(node.id) ? '折叠子目录' : '展开子目录';
+      toggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (folderExpanded.has(node.id)) folderExpanded.delete(node.id);
+        else folderExpanded.add(node.id);
+        renderFolderList();
+      });
+    } else {
+      toggle.classList.add('tag-toggle-spacer');
+    }
+    item.appendChild(toggle);
+
+    const name = document.createElement('button');
+    name.className = 'tag-name';
+    name.textContent = node.name;
+    name.title = node.name + '（右键管理）';
+    name.addEventListener('click', () => filterByFolder(node.id));
+    name.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      openFolderMenu(node, e.clientX, e.clientY);
+    });
+    item.appendChild(name);
+
+    const count = document.createElement('span');
+    count.className = 'tag-count';
+    count.textContent = node.count;
+    item.appendChild(count);
+    wrap.appendChild(item);
+
+    if (isParent && folderExpanded.has(node.id)) {
+      for (const child of node.children) renderItem(child, depth + 1);
+    }
+  };
+
+  for (const child of tree.children) renderItem(child, 0);
+
+  // 未归类固定在最后
+  const unfiled = document.createElement('div');
+  unfiled.className = 'folder-item folder-unfiled' + (state.view === 'folder' && state.folder === 'none' ? ' active' : '');
+  const spacer = document.createElement('span');
+  spacer.className = 'tag-toggle tag-toggle-spacer';
+  unfiled.appendChild(spacer);
+  const name = document.createElement('button');
+  name.className = 'tag-name';
+  name.textContent = '未归类';
+  name.addEventListener('click', () => filterByFolder('none'));
+  unfiled.appendChild(name);
+  const count = document.createElement('span');
+  count.className = 'tag-count';
+  count.textContent = state.unfiledCount;
+  unfiled.appendChild(count);
+  wrap.appendChild(unfiled);
+
+  if (!state.folders.length && !state.unfiledCount) {
+    const p = document.createElement('p');
+    p.className = 'tag-empty';
+    p.textContent = '暂无目录，点右上角 ＋ 创建';
+    wrap.appendChild(p);
+  }
+}
+
+function openFolderMenu(node, x, y) {
+  closeTagMenu();
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.id = 'tag-ctx-menu';
+
+  const addItem = (label, onClick, danger) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (danger) b.className = 'danger';
+    b.addEventListener('click', () => { onClick(); closeTagMenu(); });
+    menu.appendChild(b);
+  };
+
+  addItem('新建子目录', () => createFolderPrompt(node.id));
+  addItem('重命名', () => renameFolderPrompt(node));
+  // 二级菜单需等本次点击的 document 关闭监听消费完再打开，否则会被立即关掉
+  addItem('移动到…', () => setTimeout(() => openFolderMoveMenu(node, x, y), 0));
+  addItem('删除目录', () => deleteFolderPrompt(node), true);
+
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  document.body.appendChild(menu);
+  setTimeout(() => document.addEventListener('click', closeTagMenu, { once: true }), 0);
+}
+
+// 「移动到…」二级菜单：列出根目录与其余目录（排除自身及后代）
+function openFolderMoveMenu(node, x, y) {
+  closeTagMenu();
+  const tree = buildFolderTree(state.folders);
+  const excluded = new Set(collectDescendantIds(tree, node.id));
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.id = 'tag-ctx-menu';
+
+  const addMoveItem = (label, parentId, depth) => {
+    const b = document.createElement('button');
+    b.textContent = (depth > 0 ? '\u00A0\u00A0'.repeat(depth) + '└ ' : '') + label;
+    b.addEventListener('click', async () => {
+      closeTagMenu();
+      await moveFolder(node, parentId);
+    });
+    menu.appendChild(b);
+  };
+
+  addMoveItem('根目录（顶级）', null, 0);
+  for (const f of flattenFolders(tree)) {
+    if (excluded.has(f.id) || f.id === node.parent_id) continue;
+    addMoveItem(f.name, f.id, f.depth);
+  }
+
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  document.body.appendChild(menu);
+  setTimeout(() => document.addEventListener('click', closeTagMenu, { once: true }), 0);
+}
+
+async function createFolderPrompt(parentId) {
+  const name = prompt(parentId ? '子目录名称：' : '目录名称：');
+  if (!name || !name.trim()) return;
+  try {
+    await api('/api/folders', { method: 'POST', body: { name: name.trim(), parentId: parentId ?? null } });
+    folderExpanded.add(parentId ?? 0);
+    await refreshFolders();
+    toast('已创建目录 📁');
+  } catch (err) { handleActionError(err); }
+}
+
+async function renameFolderPrompt(node) {
+  const newName = prompt('把目录「' + node.name + '」重命名为：', node.name);
+  if (!newName || !newName.trim() || newName.trim() === node.name) return;
+  try {
+    await api('/api/folders/' + node.id, { method: 'PUT', body: { name: newName.trim() } });
+    await refreshFolders();
+    renderMemoList();
+    toast('已重命名');
+  } catch (err) { handleActionError(err); }
+}
+
+async function moveFolder(node, parentId) {
+  if ((node.parent_id ?? null) === (parentId ?? null)) return;
+  try {
+    await api('/api/folders/' + node.id, { method: 'PUT', body: { parentId } });
+    folderExpanded.add(parentId ?? 0);
+    await refreshFolders();
+    renderMemoList();
+    toast('已移动');
+  } catch (err) { handleActionError(err); }
+}
+
+async function deleteFolderPrompt(node) {
+  if (!confirm('删除目录「' + node.name + '」？\n其中的笔记将变为未归类，子目录将上移一级。')) return;
+  try {
+    await api('/api/folders/' + node.id, { method: 'DELETE' });
+    if (state.folder === node.id) {
+      state.view = 'all';
+      state.folder = null;
+      setNavActive('all');
+    }
+    await refreshFolders();
+    renderMemoList();
+    toast('已删除目录');
+  } catch (err) { handleActionError(err); }
+}
+
+function filterByFolder(folderId) {
+  state.view = 'folder';
+  state.folder = folderId;
+  state.tag = '';
+  state.q = '';
+  $('#search-input').value = '';
+  $('#search-clear').classList.add('hidden');
+  setNavActive(null);
+  closeSidebar();
+  renderFolderList();
+  if (mainEditor && mainEditor.refreshFolderOptions) mainEditor.refreshFolderOptions();
   reloadMemos();
 }
 
@@ -946,6 +1248,7 @@ function doSearch(q) {
   state.q = q;
   if (q) {
     state.view = 'all';
+    state.folder = null;
     setNavActive('all');
   }
   reloadMemos();
@@ -1014,15 +1317,17 @@ function bindNav() {
       const nav = b.dataset.nav;
       closeSidebar();
       if (nav === 'all') {
-        state.view = 'all'; state.tag = ''; state.q = '';
+        state.view = 'all'; state.tag = ''; state.folder = null; state.q = '';
         $('#search-input').value = '';
         $('#search-clear').classList.add('hidden');
-        setNavActive('all'); renderTagList(); reloadMemos();
+        setNavActive('all'); renderTagList(); renderFolderList();
+        if (mainEditor && mainEditor.refreshFolderOptions) mainEditor.refreshFolderOptions();
+        reloadMemos();
       } else if (nav === 'pinned') {
-        state.view = 'pinned'; state.tag = '';
-        setNavActive('pinned'); renderTagList(); reloadMemos();
+        state.view = 'pinned'; state.tag = ''; state.folder = null;
+        setNavActive('pinned'); renderTagList(); renderFolderList(); reloadMemos();
       } else if (nav === 'trash') {
-        state.view = 'trash'; state.tag = ''; state.q = '';
+        state.view = 'trash'; state.tag = ''; state.folder = null; state.q = '';
         setNavActive('trash'); reloadMemos();
       } else if (nav === 'review') {
         openReview();
@@ -1092,11 +1397,14 @@ function bindSidebar() {
 
   // filter-bar 清除按钮
   $('#filter-clear').addEventListener('click', () => {
-    state.view = 'all'; state.tag = ''; state.q = '';
+    state.view = 'all'; state.tag = ''; state.folder = null; state.q = '';
     $('#search-input').value = '';
     $('#search-clear').classList.add('hidden');
-    setNavActive('all'); renderTagList(); reloadMemos();
+    setNavActive('all'); renderTagList(); renderFolderList(); reloadMemos();
   });
+
+  // 新建根目录
+  $('#folder-add').addEventListener('click', () => createFolderPrompt(null));
 }
 
 function downloadExport(format) {

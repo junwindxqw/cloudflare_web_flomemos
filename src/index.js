@@ -175,6 +175,7 @@ function mapMemo(memo) {
     pinned: Boolean(memo.pinned),
     pinned_order: memo.pinned_order || 0,
     word_count: memo.word_count || 0,
+    folder_id: memo.folder_id ?? null,
     created_at: memo.created_at,
     updated_at: memo.updated_at,
     tags: memo._tags || [],
@@ -403,6 +404,7 @@ async function listMemos(request, env, url, user) {
   const q = (params.get('q') || '').slice(0, 200);
   const pinned = params.get('pinned') === '1';
   const includeTrash = params.get('include_trash') === '1';
+  const folderParam = params.get('folder');
 
   const conditions = ['m.user_id = ?'];
   const binds = [user.id];
@@ -419,6 +421,18 @@ async function listMemos(request, env, url, user) {
     conditions.push('m.id IN (SELECT t.memo_id FROM tags t WHERE t.tag = ? AND t.memo_id IN (SELECT id FROM memos WHERE user_id = ?))');
     binds.push(tag, user.id);
   }
+  if (folderParam === 'none') {
+    conditions.push('m.folder_id IS NULL');
+  } else if (folderParam) {
+    // 目录过滤包含其全部子目录
+    const folderId = Number.parseInt(folderParam, 10);
+    if (!Number.isFinite(folderId)) return errorJson(400, '目录参数不合法');
+    const ids = await folderWithDescendantIds(env, user.id, folderId);
+    if (!ids.length) return json({ memos: [], has_more: false });
+    const placeholders = ids.map(() => '?').join(',');
+    conditions.push('m.folder_id IN (' + placeholders + ')');
+    binds.push(...ids);
+  }
   if (q) {
     conditions.push("m.content LIKE ? ESCAPE '\\'");
     binds.push('%' + escapeLike(q) + '%');
@@ -429,7 +443,7 @@ async function listMemos(request, env, url, user) {
     ? 'm.pinned_order ASC, m.id DESC'
     : 'm.id DESC';
   const rows = await env.DB
-    .prepare('SELECT m.id, m.content, m.pinned, m.pinned_order, m.word_count, m.created_at, m.updated_at, m.deleted_at FROM memos m WHERE ' + whereSql + ' ORDER BY ' + orderBy + ' LIMIT ?')
+    .prepare('SELECT m.id, m.content, m.pinned, m.pinned_order, m.word_count, m.folder_id, m.created_at, m.updated_at, m.deleted_at FROM memos m WHERE ' + whereSql + ' ORDER BY ' + orderBy + ' LIMIT ?')
     .bind(...binds, limit + 1)
     .all();
 
@@ -445,18 +459,20 @@ async function createMemo(request, env, user) {
   const content = String(body?.content ?? '').replace(/\r\n/g, '\n').trim();
   if (!content) return errorJson(400, '内容不能为空');
   if (content.length > MAX_CONTENT) return errorJson(400, '内容过长（最多 20000 字）');
+  const folderId = await resolveFolderId(env, user.id, body?.folderId);
+  if (folderId === false) return errorJson(400, '目录不存在');
 
   const now = new Date().toISOString();
   const wc = wordCount(content);
   const bucket = Math.floor(Math.random() * 100);
   const result = await env.DB
-    .prepare('INSERT INTO memos (user_id, content, word_count, random_bucket, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .bind(user.id, content, wc, bucket, now, now)
+    .prepare('INSERT INTO memos (user_id, content, word_count, random_bucket, folder_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .bind(user.id, content, wc, bucket, folderId, now, now)
     .run();
   const id = result.meta.last_row_id;
   const tags = extractTags(content);
   if (tags.length) await insertTags(env.DB, id, tags);
-  return json({ memo: { id, content, pinned: false, pinned_order: 0, word_count: wc, created_at: now, updated_at: now, tags, shared: false } });
+  return json({ memo: { id, content, pinned: false, pinned_order: 0, word_count: wc, folder_id: folderId, created_at: now, updated_at: now, tags, shared: false } });
 }
 
 async function updateMemo(request, env, user, id) {
@@ -464,7 +480,15 @@ async function updateMemo(request, env, user, id) {
   if (!existing || existing.deleted_at) return errorJson(404, '笔记不存在');
 
   const body = await readJsonBody(request);
-  if (!body || (body.content === undefined && body.pinned === undefined)) return errorJson(400, '没有需要更新的字段');
+  if (!body || (body.content === undefined && body.pinned === undefined && body.folderId === undefined)) {
+    return errorJson(400, '没有需要更新的字段');
+  }
+
+  let folderId = null;
+  if (body.folderId !== undefined) {
+    folderId = await resolveFolderId(env, user.id, body.folderId);
+    if (folderId === false) return errorJson(400, '目录不存在');
+  }
 
   const statements = [];
   if (body.content !== undefined) {
@@ -490,6 +514,9 @@ async function updateMemo(request, env, user, id) {
     } else {
       statements.push(env.DB.prepare('UPDATE memos SET pinned = ?, pinned_order = 0 WHERE id = ? AND user_id = ?').bind(pinned, id, user.id));
     }
+  }
+  if (body.folderId !== undefined) {
+    statements.push(env.DB.prepare('UPDATE memos SET folder_id = ? WHERE id = ? AND user_id = ?').bind(folderId, id, user.id));
   }
   await env.DB.batch(statements);
 
@@ -700,6 +727,145 @@ async function deleteTag(request, env, user, name) {
   await env.DB.prepare(
     `DELETE FROM tags WHERE tag = ? AND memo_id IN (SELECT id FROM memos WHERE user_id = ?)`
   ).bind(name, user.id).run();
+  return json({ ok: true });
+}
+
+// ---------- 目录（文件夹层级，与 #标签 相互独立） ----------
+const MAX_FOLDER_NAME = 30;
+const MAX_FOLDER_DEPTH = 8;
+
+function validateFolderName(name) {
+  const n = String(name ?? '').trim();
+  if (!n) return '目录名不能为空';
+  if (n.length > MAX_FOLDER_NAME) return '目录名最多 ' + MAX_FOLDER_NAME + ' 个字符';
+  if (n.includes('/')) return '目录名不能包含 /';
+  return '';
+}
+
+// 归一化 memo 的 folderId：null/''/undefined -> null；数字需属于当前用户；非法返回 false
+async function resolveFolderId(env, userId, raw) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const id = Number(raw);
+  if (!Number.isInteger(id) || id <= 0) return false;
+  const row = await env.DB.prepare('SELECT id FROM folders WHERE id = ? AND user_id = ?').bind(id, userId).first();
+  return row ? id : false;
+}
+
+// 目录 id + 其全部后代 id（含自身）；目录不存在时返回空数组
+async function folderWithDescendantIds(env, userId, folderId) {
+  const rows = await env.DB.prepare('SELECT id, parent_id FROM folders WHERE user_id = ?').bind(userId).all();
+  const childrenOf = new Map();
+  for (const r of rows.results) {
+    const key = r.parent_id ?? 0;
+    if (!childrenOf.has(key)) childrenOf.set(key, []);
+    childrenOf.get(key).push(r.id);
+  }
+  if (!rows.results.some((r) => r.id === folderId)) return [];
+  const out = [folderId];
+  const queue = [folderId];
+  while (queue.length) {
+    const cur = queue.shift();
+    for (const child of childrenOf.get(cur) || []) {
+      out.push(child);
+      queue.push(child);
+    }
+  }
+  return out;
+}
+
+// 从某目录向上走，返回祖先链（不含自身）；用于环检测与深度计算
+async function folderAncestorChain(env, userId, folderId) {
+  const chain = [];
+  let cur = folderId;
+  for (let i = 0; i < MAX_FOLDER_DEPTH + 2 && cur; i++) {
+    const row = await env.DB.prepare('SELECT id, parent_id FROM folders WHERE id = ? AND user_id = ?').bind(cur, userId).first();
+    if (!row) break;
+    chain.push(row.id);
+    cur = row.parent_id;
+  }
+  return chain;
+}
+
+async function listFolders(request, env, user) {
+  const rows = await env.DB.prepare(
+    `SELECT f.id, f.parent_id, f.name, f.created_at,
+       (SELECT COUNT(*) FROM memos m WHERE m.folder_id = f.id AND m.user_id = f.user_id AND m.deleted_at IS NULL) AS count
+     FROM folders f WHERE f.user_id = ? ORDER BY f.id ASC`
+  ).bind(user.id).all();
+  const unfiledRow = await env.DB
+    .prepare('SELECT COUNT(*) AS c FROM memos WHERE user_id = ? AND deleted_at IS NULL AND folder_id IS NULL')
+    .bind(user.id)
+    .first();
+  return json({ folders: rows.results, unfiled: unfiledRow.c });
+}
+
+async function createFolder(request, env, user) {
+  const body = await readJsonBody(request);
+  const nameError = validateFolderName(body?.name);
+  if (nameError) return errorJson(400, nameError);
+  const name = String(body.name).trim();
+
+  let parentId = null;
+  if (body.parentId !== null && body.parentId !== undefined && body.parentId !== '') {
+    parentId = Number(body.parentId);
+    if (!Number.isInteger(parentId) || parentId <= 0) return errorJson(400, '父目录不合法');
+    const parent = await env.DB.prepare('SELECT id, parent_id FROM folders WHERE id = ? AND user_id = ?').bind(parentId, user.id).first();
+    if (!parent) return errorJson(404, '父目录不存在');
+    const chain = await folderAncestorChain(env, user.id, parentId);
+    if (chain.length >= MAX_FOLDER_DEPTH) return errorJson(400, '目录层级过深（最多 ' + MAX_FOLDER_DEPTH + ' 层）');
+  }
+
+  const now = new Date().toISOString();
+  const result = await env.DB
+    .prepare('INSERT INTO folders (user_id, parent_id, name, created_at) VALUES (?, ?, ?, ?)')
+    .bind(user.id, parentId, name, now)
+    .run();
+  return json({ folder: { id: result.meta.last_row_id, parent_id: parentId, name, count: 0, created_at: now } });
+}
+
+async function updateFolder(request, env, user, id) {
+  const existing = await env.DB.prepare('SELECT id, parent_id, name FROM folders WHERE id = ? AND user_id = ?').bind(id, user.id).first();
+  if (!existing) return errorJson(404, '目录不存在');
+
+  const body = await readJsonBody(request);
+  if (!body || (body.name === undefined && body.parentId === undefined)) return errorJson(400, '没有需要更新的字段');
+
+  let name = existing.name;
+  if (body.name !== undefined) {
+    const nameError = validateFolderName(body.name);
+    if (nameError) return errorJson(400, nameError);
+    name = String(body.name).trim();
+  }
+
+  let parentId = existing.parent_id;
+  if (body.parentId !== undefined) {
+    parentId = body.parentId === null || body.parentId === '' ? null : Number(body.parentId);
+    if (parentId !== null && (!Number.isInteger(parentId) || parentId <= 0)) return errorJson(400, '父目录不合法');
+    if (parentId === id) return errorJson(400, '不能把目录移动到自身');
+    if (parentId !== null) {
+      const parent = await env.DB.prepare('SELECT id FROM folders WHERE id = ? AND user_id = ?').bind(parentId, user.id).first();
+      if (!parent) return errorJson(404, '父目录不存在');
+      // 环检测：新父目录不能是自己的后代
+      const descendantIds = await folderWithDescendantIds(env, user.id, id);
+      if (descendantIds.includes(parentId)) return errorJson(400, '不能把目录移动到自己的子目录下');
+      const chain = await folderAncestorChain(env, user.id, parentId);
+      if (chain.length >= MAX_FOLDER_DEPTH) return errorJson(400, '目录层级过深（最多 ' + MAX_FOLDER_DEPTH + ' 层）');
+    }
+  }
+
+  await env.DB.prepare('UPDATE folders SET name = ?, parent_id = ? WHERE id = ? AND user_id = ?').bind(name, parentId, id, user.id).run();
+  return json({ folder: { id, parent_id: parentId, name } });
+}
+
+// 删除目录：目录下笔记变为未归类，子目录上移一级
+async function deleteFolder(env, user, id) {
+  const existing = await env.DB.prepare('SELECT id, parent_id FROM folders WHERE id = ? AND user_id = ?').bind(id, user.id).first();
+  if (!existing) return errorJson(404, '目录不存在');
+  await env.DB.batch([
+    env.DB.prepare('UPDATE memos SET folder_id = NULL WHERE folder_id = ? AND user_id = ?').bind(id, user.id),
+    env.DB.prepare('UPDATE folders SET parent_id = ? WHERE parent_id = ? AND user_id = ?').bind(existing.parent_id, id, user.id),
+    env.DB.prepare('DELETE FROM folders WHERE id = ? AND user_id = ?').bind(id, user.id),
+  ]);
   return json({ ok: true });
 }
 
@@ -1209,6 +1375,13 @@ async function handleApi(request, env, url, secure) {
   if (method === 'POST' && pathname === '/api/tags/merge') return mergeTags(request, env, user);
   const tagDeleteMatch = pathname.match(/^\/api\/tags\/(.+)$/);
   if (tagDeleteMatch && method === 'DELETE') return deleteTag(request, env, user, decodeURIComponent(tagDeleteMatch[1]).slice(0, 64));
+
+  // 目录（文件夹）
+  if (method === 'GET' && pathname === '/api/folders') return listFolders(request, env, user);
+  if (method === 'POST' && pathname === '/api/folders') return createFolder(request, env, user);
+  const folderMatch = pathname.match(/^\/api\/folders\/(\d+)$/);
+  if (folderMatch && method === 'PUT') return updateFolder(request, env, user, Number(folderMatch[1]));
+  if (folderMatch && method === 'DELETE') return deleteFolder(env, user, Number(folderMatch[1]));
 
   // 统计
   if (method === 'GET' && pathname === '/api/stats') return getStats(request, env, user);

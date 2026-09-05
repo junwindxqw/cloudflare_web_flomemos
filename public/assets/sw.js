@@ -3,7 +3,7 @@
 //   - /vendor/* 和 /assets/* 走 stale-while-revalidate（命中缓存立即返回，后台刷新）
 //   - /api/* 与其他 GET 请求走 network-first（断网时回退缓存）
 
-const VERSION = 'fm-sw-v1';
+const VERSION = 'fm-sw-v2';
 const CACHE_STATIC = `${VERSION}-static`;
 
 const PRECACHE = [
@@ -16,6 +16,9 @@ const PRECACHE = [
   '/assets/api.js',
   '/assets/md.js',
   '/assets/i18n.js',
+  '/assets/tagTree.js',
+  '/assets/folderTree.js',
+  '/assets/editorCore.js',
   '/vendor/marked.min.js',
   '/vendor/purify.min.js',
 ];

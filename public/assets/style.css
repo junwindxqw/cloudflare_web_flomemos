@@ -289,14 +289,19 @@ input, textarea {
 .nav-item.active { background: var(--accent-weak); color: var(--accent); font-weight: 500; }
 .nav-count { margin-left: auto; font-size: 12px; color: var(--muted); }
 
-.side-section { flex: 1; min-height: 60px; display: flex; flex-direction: column; }
+.side-section { flex: 0 0 auto; display: flex; flex-direction: column; }
 .side-title {
   font-size: 12px;
   color: var(--muted);
   padding: 0 10px 6px;
   letter-spacing: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
-.tag-list { flex: 1; overflow-y: auto; }
+.side-add { width: 20px; height: 20px; font-size: 13px; }
+/* 列表自然高度，超出在侧栏内滚动；单个树过高时各自内部滚动 */
+.tag-list, .folder-list { overflow-y: auto; max-height: 300px; min-height: 0; }
 
 .tag-item {
   display: flex;
@@ -504,6 +509,7 @@ input, textarea {
   min-height: 130px;
   line-height: 1.75;
   color: var(--text);
+  overflow-y: auto;
 }
 .md-compact .md-input { min-height: 84px; }
 
@@ -1104,4 +1110,175 @@ input, textarea {
 @media (max-width: 600px) {
   .hour-chart { height: 80px; }
   .admin-search { width: 130px; }
+}
+
+/* ---------- 侧栏目录树 ---------- */
+.folder-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 5.5px 10px;
+  border-radius: 8px;
+  color: var(--text-soft);
+  font-size: 13.5px;
+  text-align: left;
+  transition: all 0.13s;
+}
+.folder-item:hover { background: var(--accent-softer); color: var(--text); }
+.folder-item.active { background: var(--accent-weak); color: var(--accent); }
+.folder-item.folder-unfiled {
+  margin-top: 2px;
+  color: var(--muted);
+  border-top: 1px dashed var(--border);
+  border-radius: 0 0 8px 8px;
+  padding-top: 7px;
+}
+.folder-item.folder-unfiled.active { color: var(--accent); }
+
+/* ---------- 长笔记自动折叠 ---------- */
+.memo-card.foldable { position: relative; }
+.memo-card.memo-folded .memo-content {
+  max-height: 300px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(180deg, #000 70%, transparent 99%);
+  mask-image: linear-gradient(180deg, #000 70%, transparent 99%);
+}
+.memo-fold-toggle {
+  display: flex;
+  align-items: center;
+  margin: -24px auto 8px;
+  position: relative;
+  z-index: 3;
+  padding: 3px 14px;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid var(--border-strong);
+  color: var(--text-soft);
+  font-size: 12.5px;
+  box-shadow: var(--shadow-sm);
+  transition: all 0.13s;
+}
+.memo-fold-toggle:hover { color: var(--accent); border-color: var(--accent); }
+.memo-fold-toggle.expanded { margin-top: 0; }
+
+/* ---------- 目录徽章（笔记卡片上） ---------- */
+.folder-chip {
+  color: var(--accent);
+  background: var(--accent-softer);
+  text-decoration: none;
+  font-size: 12.5px;
+  border-radius: 6px;
+  padding: 1px 7px;
+  transition: all 0.13s;
+  white-space: nowrap;
+}
+.folder-chip:hover { background: var(--accent-weak); }
+
+/* ---------- 编辑器目录选择器 ---------- */
+.md-folder {
+  max-width: 150px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 6px;
+  background: var(--card);
+  color: var(--text-soft);
+  font-size: 12.5px;
+  outline: none;
+}
+.md-folder:focus { border-color: var(--accent); }
+
+/* ---------- 全屏编辑（Zen）+ TOC ---------- */
+body.md-zen-active { overflow: hidden; }
+
+.md-editor.md-zen {
+  position: fixed;
+  inset: 0;
+  z-index: 130;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  animation: zenIn 0.16s ease;
+}
+@keyframes zenIn {
+  from { opacity: 0.6; transform: scale(0.99); }
+  to { opacity: 1; transform: none; }
+}
+
+.md-main { position: relative; }
+.md-zen .md-main { flex: 1; display: flex; min-height: 0; }
+.md-zen .md-wrap {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+.md-zen .md-input,
+.md-zen .md-preview {
+  display: block;
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 20px 28px 48px;
+  max-height: none;
+  min-height: 100%;
+  overflow-y: visible;
+  font-size: 16px;
+}
+.md-zen .md-footer { border-top: 1px solid var(--border); }
+
+.md-toc {
+  display: none;
+  width: 252px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  padding: 14px 10px;
+  overflow-y: auto;
+  background: color-mix(in srgb, var(--bg) 55%, var(--card));
+}
+.md-zen .md-toc { display: block; }
+.md-toc-title {
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 1px;
+  padding: 0 8px 8px;
+  position: sticky;
+  top: -14px;
+  background: inherit;
+}
+.md-toc-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 4px 8px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: var(--text-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: all 0.12s;
+}
+.toc-h1 { font-weight: 600; color: var(--text); }
+.toc-h2 { padding-left: 22px; }
+.toc-h3 { padding-left: 38px; }
+.toc-h4, .toc-h5, .toc-h6 { padding-left: 54px; font-size: 12.5px; }
+.md-toc-item:hover { background: var(--accent-softer); color: var(--text); }
+.md-toc-item.active { background: var(--accent-weak); color: var(--accent); }
+.md-toc-empty {
+  color: var(--muted);
+  font-size: 12.5px;
+  padding: 4px 8px;
+  line-height: 1.7;
+}
+
+/* 阅读模式下任务复选框可点击反写源码 */
+.md-preview input[type="checkbox"] { cursor: pointer; }
+
+/* ---------- 窄屏适配 ---------- */
+@media (max-width: 720px) {
+  .md-toc { width: 190px; padding: 10px 6px; }
+  .md-zen .md-input, .md-zen .md-preview { padding: 14px 16px 32px; }
+  .md-folder { max-width: 110px; }
 }

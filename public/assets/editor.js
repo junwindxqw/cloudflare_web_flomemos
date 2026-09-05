@@ -1,7 +1,9 @@
 // 增强型 Markdown 编辑器
 // 工具栏 / 实时预览 / 快捷键 / 列表自动续写 / 粘贴与拖拽上传图片 / #标签 自动补全
+// 全屏编辑（Zen）：占满整个视口，右侧目录（TOC）在编辑与阅读模式下都可跳转
 
 import { renderMemoHtml } from './md.js';
+import { parseHeadings, transformBlockLines } from './editorCore.js';
 
 const SVG = {
   quote: '<svg viewBox="0 0 16 16"><path d="M3 5.5h3v3H4.5A1.5 1.5 0 0 0 3 10v.5A1.5 1.5 0 0 1 1.5 9V7z" fill="currentColor" stroke="none" opacity=".9"/><path d="M3.2 5.2h2.6v3.3H3.9A1.4 1.4 0 0 0 2.5 9.9v1.4H1.2V7.3c0-1.2.9-2.1 2-2.1z" fill="currentColor" stroke="none"/></svg>',
@@ -15,6 +17,8 @@ const SVG = {
   table: '<svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.2"/><path d="M2 6.3h12M2 9.6h12M6.7 6.3V13M10.7 6.3V13"/></svg>',
   hr: '<svg viewBox="0 0 16 16"><path d="M2.5 8h11"/><path d="M4 11h8" opacity=".4"/></svg>',
   eye: '<svg viewBox="0 0 16 16"><path d="M1.5 8S4 3.8 8 3.8 14.5 8 14.5 8 12 12.2 8 12.2 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="1.9"/></svg>',
+  expand: '<svg viewBox="0 0 16 16"><path d="M6 2H2v4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg>',
+  compress: '<svg viewBox="0 0 16 16"><path d="M6 2v4H2M10 2v4h4M14 10h-4v4M2 10h4v4"/></svg>',
 };
 
 function icon(name) {
@@ -43,15 +47,19 @@ export class MarkdownEditor {
    * @param {HTMLElement} mount 挂载容器
    * @param {object} opts
    *   placeholder / initial / submitText / compact
-   *   onSubmit(text) -> Promise<boolean>  返回 true 表示提交成功，可清空编辑器
-   *   onCancel()                          可选，编辑态的取消回调
-   *   getTags() -> string[]               标签自动补全候选
-   *   uploadImage(file) -> Promise<url>   可选，图片上传
+   *   onSubmit(text, folderId) -> Promise<boolean>  返回 true 表示提交成功，可清空编辑器
+   *   onCancel()                                    可选，编辑态的取消回调
+   *   getTags() -> string[]                         标签自动补全候选
+   *   uploadImage(file) -> Promise<url>             可选，图片上传
+   *   folders() -> [{id,name,depth}]                可选，目录选择器候选（path 已含缩进信息）
+   *   getFolderId() -> number|null                  可选，新建笔记默认归档目录
    */
   constructor(mount, opts = {}) {
     this.opts = opts;
     this.previewOn = false;
+    this.zen = false;
     this.suggest = { open: false, items: [], active: 0, from: 0 };
+    this.tocItems = [];
 
     const root = document.createElement('div');
     root.className = 'md-editor' + (opts.compact ? ' md-compact' : '');
@@ -61,18 +69,18 @@ export class MarkdownEditor {
     bar.className = 'md-toolbar';
     bar.appendChild(btn('bold', '加粗', '<span class="md-tx md-b">B</span>', 'Ctrl+B'));
     bar.appendChild(btn('italic', '斜体', '<span class="md-tx md-i">I</span>', 'Ctrl+I'));
-    bar.appendChild(btn('strike', '删除线', '<span class="md-tx md-s">S</span>'));
+    bar.appendChild(btn('strike', '删除线', '<span class="md-tx md-s">S</span>', 'Ctrl+Shift+X'));
     bar.appendChild(this.sep());
-    bar.appendChild(btn('h1', '一级标题', 'H1'));
-    bar.appendChild(btn('h2', '二级标题', 'H2'));
-    bar.appendChild(btn('h3', '三级标题', 'H3'));
+    bar.appendChild(btn('h1', '一级标题', 'H1', 'Ctrl+Alt+1'));
+    bar.appendChild(btn('h2', '二级标题', 'H2', 'Ctrl+Alt+2'));
+    bar.appendChild(btn('h3', '三级标题', 'H3', 'Ctrl+Alt+3'));
     bar.appendChild(this.sep());
     bar.appendChild(btn('quote', '引用', icon('quote')));
-    bar.appendChild(btn('ul', '无序列表', icon('ul')));
-    bar.appendChild(btn('ol', '有序列表', icon('ol')));
-    bar.appendChild(btn('task', '任务列表', icon('task')));
+    bar.appendChild(btn('ul', '无序列表', icon('ul'), 'Ctrl+Shift+8'));
+    bar.appendChild(btn('ol', '有序列表', icon('ol'), 'Ctrl+Shift+7'));
+    bar.appendChild(btn('task', '任务列表', icon('task'), 'Ctrl+Shift+9'));
     bar.appendChild(this.sep());
-    bar.appendChild(btn('code', '行内代码', icon('code')));
+    bar.appendChild(btn('code', '行内代码', icon('code'), 'Ctrl+E'));
     bar.appendChild(btn('codeblock', '代码块', icon('codeblock')));
     bar.appendChild(btn('link', '链接', icon('link'), 'Ctrl+K'));
     bar.appendChild(btn('image', '图片', icon('image')));
@@ -81,26 +89,46 @@ export class MarkdownEditor {
 
     const right = document.createElement('div');
     right.className = 'md-toolbar-right';
-    this.previewBtn = btn('preview', '预览', icon('eye'));
+    this.previewBtn = btn('preview', '预览 / 阅读', icon('eye'));
     this.previewBtn.classList.add('md-preview-toggle');
     right.appendChild(this.previewBtn);
+    this.zenBtn = btn('zen', '全屏编辑', icon('expand'));
+    this.zenBtn.classList.add('md-zen-toggle');
+    right.appendChild(this.zenBtn);
     bar.appendChild(right);
     root.appendChild(bar);
 
-    // ----- 编辑 / 预览区 -----
+    // ----- 主体：编辑 / 预览区 + 全屏时的右侧目录 -----
+    const main = document.createElement('div');
+    main.className = 'md-main';
+
     const wrap = document.createElement('div');
     wrap.className = 'md-wrap';
+    this.wrapEl = wrap;
 
     this.input = document.createElement('textarea');
     this.input.className = 'md-input';
     this.input.placeholder = opts.placeholder ?? '记录想法… #标签';
     this.input.rows = opts.compact ? 3 : 5;
+    this.input.style.maxHeight = opts.compact ? '300px' : '460px';
     wrap.appendChild(this.input);
 
     this.preview = document.createElement('div');
     this.preview.className = 'md-preview md-body hidden';
     wrap.appendChild(this.preview);
-    root.appendChild(wrap);
+    main.appendChild(wrap);
+
+    // ----- TOC 侧栏（仅全屏模式显示） -----
+    this.tocEl = document.createElement('aside');
+    this.tocEl.className = 'md-toc';
+    const tocTitle = document.createElement('div');
+    tocTitle.className = 'md-toc-title';
+    tocTitle.textContent = '目录';
+    this.tocList = document.createElement('div');
+    this.tocList.className = 'md-toc-list';
+    this.tocEl.append(tocTitle, this.tocList);
+    main.appendChild(this.tocEl);
+    root.appendChild(main);
 
     // ----- 底栏 -----
     const footer = document.createElement('div');
@@ -114,6 +142,14 @@ export class MarkdownEditor {
     this.counter.className = 'md-count';
     this.counter.textContent = '0 字';
     footer.appendChild(this.counter);
+
+    if (opts.folders) {
+      this.folderSel = document.createElement('select');
+      this.folderSel.className = 'md-folder';
+      this.folderSel.title = '归档到目录（可选）';
+      this.refreshFolderOptions();
+      footer.appendChild(this.folderSel);
+    }
 
     if (opts.onCancel) {
       const cancelBtn = document.createElement('button');
@@ -154,6 +190,7 @@ export class MarkdownEditor {
 
     if (opts.initial) this.input.value = opts.initial;
     this.updateCount();
+    this.autoResize();
 
     this.bindEvents();
   }
@@ -176,10 +213,15 @@ export class MarkdownEditor {
     input.addEventListener('keydown', (e) => this.onKeydown(e));
     input.addEventListener('input', () => {
       this.updateCount();
+      this.autoResize();
       this.updateSuggest();
       if (this.opts.onChange) this.opts.onChange(this.input.value);
       if (this.previewOn) this.renderPreviewSoon();
+      if (this.zen) this.renderTocSoon();
     });
+    // 光标移动时同步 TOC 高亮（编辑模式）
+    input.addEventListener('keyup', () => this.updateTocActive());
+    input.addEventListener('click', () => this.updateTocActive());
     input.addEventListener('paste', (e) => {
       const items = e.clipboardData && e.clipboardData.items;
       if (!items) return;
@@ -215,7 +257,50 @@ export class MarkdownEditor {
       this.acceptSuggest(item.dataset.tag);
     });
 
-    // 预览按钮由工具栏的事件委托统一处理（data-cmd="preview"），不再单独绑定
+    // 预览模式下点击任务复选框 => 反写 Markdown 源码
+    this.preview.addEventListener('click', (e) => {
+      const box = e.target.closest('input[type="checkbox"]');
+      if (!box) return;
+      this.toggleTaskCheckbox(box);
+    });
+
+    // 阅读模式滚动时同步 TOC 高亮（滚动发生在 wrap 上：普通模式是 preview 自身、全屏是 wrap）
+    this.wrapEl.addEventListener('scroll', () => {
+      if (!this.zen || !this.previewOn) return;
+      this.updateTocActive();
+    }, true);
+
+    this.tocList.addEventListener('click', (e) => {
+      const item = e.target.closest('.md-toc-item');
+      if (!item) return;
+      this.jumpToHeading(Number(item.dataset.index));
+    });
+  }
+
+  // ---------- 目录选择器 ----------
+  refreshFolderOptions() {
+    if (!this.folderSel) return;
+    const prev = this.folderSel.value;
+    const list = this.opts.folders ? this.opts.folders() : [];
+    this.folderSel.innerHTML = '';
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = '📁 未归类';
+    this.folderSel.appendChild(none);
+    for (const f of list) {
+      const o = document.createElement('option');
+      o.value = String(f.id);
+      o.textContent = (f.depth > 0 ? '\u00A0\u00A0'.repeat(f.depth) + '└ ' : '📁 ') + f.name;
+      this.folderSel.appendChild(o);
+    }
+    const hasPrev = prev !== '' && list.some((f) => String(f.id) === prev);
+    const fallback = this.opts.getFolderId ? this.opts.getFolderId() : '';
+    this.folderSel.value = hasPrev ? prev : (fallback === null || fallback === undefined ? '' : String(fallback));
+  }
+
+  currentFolderId() {
+    if (!this.folderSel) return undefined;
+    return this.folderSel.value === '' ? null : Number(this.folderSel.value);
   }
 
   // ---------- 提交 ----------
@@ -228,11 +313,13 @@ export class MarkdownEditor {
     if (!this.opts.onSubmit) return;
     this.setBusy(true);
     try {
-      const ok = await this.opts.onSubmit(text);
+      const ok = await this.opts.onSubmit(text, this.currentFolderId());
       if (ok) {
         this.input.value = '';
         this.updateCount();
+        this.autoResize();
         if (this.previewOn) this.renderPreview();
+        if (this.zen) this.exitZen();
       }
     } finally {
       this.setBusy(false);
@@ -251,6 +338,13 @@ export class MarkdownEditor {
     this.counter.classList.toggle('danger', len >= 19500);
   }
 
+  // 输入框随内容自动增高（上限由 inline max-height 控制，超出内部滚动；全屏下无上限）
+  autoResize() {
+    const el = this.input;
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 'px';
+  }
+
   // ---------- 预览 ----------
   togglePreview() {
     this.previewOn = !this.previewOn;
@@ -259,10 +353,13 @@ export class MarkdownEditor {
       this.input.classList.add('hidden');
       this.preview.classList.remove('hidden');
       this.renderPreview();
+      if (this.zen) this.updateTocActive();
     } else {
       this.preview.classList.add('hidden');
       this.input.classList.remove('hidden');
+      this.autoResize();
       this.input.focus();
+      if (this.zen) this.updateTocActive();
     }
   }
 
@@ -273,6 +370,150 @@ export class MarkdownEditor {
 
   renderPreview() {
     this.preview.innerHTML = this.input.value.trim() ? renderMemoHtml(this.input.value) : '<p class="md-empty-tip">暂无内容</p>';
+    // 启用任务复选框，点击可反写源码
+    this.preview.querySelectorAll('input[type="checkbox"]').forEach((el) => {
+      el.disabled = false;
+    });
+  }
+
+  // 预览中第 idx 个复选框 <=> 源码中第 idx 个任务标记
+  toggleTaskCheckbox(box) {
+    const boxes = [...this.preview.querySelectorAll('input[type="checkbox"]')];
+    const idx = boxes.indexOf(box);
+    if (idx === -1) return;
+    const re = /^(\s*(?:[-*+]|\d+[.)])\s+\[)([xX ])(\])/gm;
+    let n = 0;
+    let changed = false;
+    const text = this.input.value.replace(re, (full, head, state, tail) => {
+      if (n++ !== idx) return full;
+      changed = true;
+      return head + (state === ' ' ? 'x' : ' ') + tail;
+    });
+    if (!changed) return;
+    this.input.value = text;
+    if (this.opts.onChange) this.opts.onChange(text);
+    this.updateCount();
+    const scroll = this.preview.scrollTop;
+    this.renderPreview();
+    this.preview.scrollTop = scroll;
+    if (this.zen) this.renderTocSoon();
+  }
+
+  // ---------- 全屏（Zen） ----------
+  enterZen() {
+    if (this.zen) return;
+    this.zen = true;
+    this.root.classList.add('md-zen');
+    document.body.classList.add('md-zen-active');
+    this.zenBtn.innerHTML = SVG.compress;
+    this.zenBtn.title = '退出全屏（Esc）';
+    // 全屏下取消普通模式的自动增高上限，由布局撑满
+    this.input.style.maxHeight = '';
+    this.renderToc();
+    setTimeout(() => this.input.focus(), 30);
+    this.onDocKeydown = (e) => {
+      if (e.key === 'Escape' && !this.suggest.open) {
+        e.preventDefault();
+        this.exitZen();
+      }
+    };
+    document.addEventListener('keydown', this.onDocKeydown);
+  }
+
+  exitZen() {
+    if (!this.zen) return;
+    this.zen = false;
+    this.root.classList.remove('md-zen');
+    document.body.classList.remove('md-zen-active');
+    this.zenBtn.innerHTML = SVG.expand;
+    this.zenBtn.title = '全屏编辑';
+    this.input.style.maxHeight = this.opts.compact ? '300px' : '460px';
+    if (this.onDocKeydown) {
+      document.removeEventListener('keydown', this.onDocKeydown);
+      this.onDocKeydown = null;
+    }
+    this.autoResize();
+  }
+
+  // ---------- TOC ----------
+  renderTocSoon() {
+    if (this.tocTimer) clearTimeout(this.tocTimer);
+    this.tocTimer = setTimeout(() => {
+      this.renderToc();
+      this.updateTocActive();
+    }, 300);
+  }
+
+  renderToc() {
+    this.tocItems = parseHeadings(this.input.value);
+    this.tocList.innerHTML = '';
+    if (!this.tocItems.length) {
+      const tip = document.createElement('p');
+      tip.className = 'md-toc-empty';
+      tip.textContent = '暂无标题 · 在正文里用 “# 标题” 生成目录';
+      this.tocList.appendChild(tip);
+      return;
+    }
+    this.tocItems.forEach((h, i) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'md-toc-item toc-h' + h.level;
+      item.textContent = h.text;
+      item.dataset.index = String(i);
+      item.title = h.text;
+      this.tocList.appendChild(item);
+    });
+    this.updateTocActive();
+  }
+
+  updateTocActive() {
+    if (!this.zen) return;
+    const buttons = this.tocList.querySelectorAll('.md-toc-item');
+    if (!buttons.length) return;
+    let activeIdx = -1;
+    if (this.previewOn) {
+      // 阅读模式：以滚动容器（wrap）可见顶部为基准，判断滚过了哪些标题
+      const scroller = this.zen ? this.wrapEl : this.preview;
+      const hostTop = this.wrapEl.getBoundingClientRect().top;
+      const hs = this.preview.querySelectorAll('h1, h2, h3, h4, h5, h6');
+      for (let i = 0; i < hs.length; i++) {
+        if (hs[i].getBoundingClientRect().top - hostTop <= 90) activeIdx = i;
+        else break;
+      }
+      // 已滚到底：最后一节通常较短，强制高亮最后一个标题
+      if (scroller.scrollHeight > scroller.clientHeight + 4 &&
+          scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 4) {
+        activeIdx = hs.length - 1;
+      }
+    } else {
+      // 编辑模式：以光标所在行为准
+      const caretLine = this.input.value.slice(0, this.input.selectionStart).split('\n').length - 1;
+      for (let i = 0; i < this.tocItems.length; i++) {
+        if (this.tocItems[i].line <= caretLine) activeIdx = i;
+        else break;
+      }
+    }
+    buttons.forEach((el, i) => el.classList.toggle('active', i === activeIdx));
+    if (activeIdx >= 0 && buttons[activeIdx]) {
+      buttons[activeIdx].scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  jumpToHeading(i) {
+    const item = this.tocItems[i];
+    if (!item) return;
+    if (this.previewOn) {
+      const hs = this.preview.querySelectorAll('h1, h2, h3, h4, h5, h6');
+      if (hs[i]) hs[i].scrollIntoView({ block: 'start' });
+    } else {
+      const lines = this.input.value.split('\n');
+      const pos = lines.slice(0, item.line).join('\n').length + (item.line > 0 ? 1 : 0);
+      this.input.setSelectionRange(pos, pos);
+      // 重新聚焦让浏览器把光标滚入可视区
+      if (document.activeElement === this.input) this.input.blur();
+      this.input.focus();
+    }
+    setTimeout(() => this.updateTocActive(), 80);
   }
 
   // ---------- 工具栏命令 ----------
@@ -302,6 +543,7 @@ export class MarkdownEditor {
       case 'table': this.insertBlock('| 列1 | 列2 | 列3 |\n| --- | --- | --- |\n|  |  |  |'); break;
       case 'hr': this.insertBlock('---'); break;
       case 'preview': this.togglePreview(); break;
+      case 'zen': this.zen ? this.exitZen() : this.enterZen(); break;
     }
   }
 
@@ -330,16 +572,8 @@ export class MarkdownEditor {
     let lineEnd = value.indexOf('\n', end);
     if (lineEnd === -1) lineEnd = value.length;
 
-    const block = value.slice(lineStart, lineEnd);
-    const lines = block.split('\n');
-    const allPrefixed = lines.every((l) => l.startsWith(prefix) || l.trim() === '');
-    const mapped = lines.map((l, i) => {
-      if (l.trim() === '' && lines.length > 1) return l;
-      if (allPrefixed) return l.slice(prefix.length);
-      const ordered = prefix === '- ';
-      return (ordered ? '' : prefix) + l;
-    });
-    const newBlock = mapped.join('\n');
+    const lines = value.slice(lineStart, lineEnd).split('\n');
+    const newBlock = transformBlockLines(lines, prefix).join('\n');
     input.setRangeText(newBlock, lineStart, lineEnd, 'end');
     input.selectionStart = lineStart;
     input.selectionEnd = lineStart + newBlock.length;
@@ -357,13 +591,18 @@ export class MarkdownEditor {
     if (lineEnd === -1) lineEnd = value.length;
 
     const lines = value.slice(lineStart, lineEnd).split('\n');
-    let out = '';
-    let idx = 1;
-    for (const l of lines) {
-      const m = l.match(/^(\s*)/);
-      const indent = m ? m[1] : '';
-      out += (idx > 1 ? '\n' : '') + indent + idx + '. ' + l.slice(indent.length);
-      idx++;
+    // 已全部是有序列表 => 再点一次取消编号
+    const allNumbered = lines.every((l) => l.trim() === '' || /^\s*\d+[.] /.test(l));
+    let out;
+    if (allNumbered) {
+      out = lines.map((l) => l.replace(/^(\s*)\d+[.] /, '$1')).join('\n');
+    } else {
+      let idx = 1;
+      out = lines.map((l) => {
+        const m = l.match(/^(\s*)/);
+        const indent = m ? m[1] : '';
+        return indent + idx++ + '. ' + l.slice(indent.length);
+      }).join('\n');
     }
     input.setRangeText(out, lineStart, lineEnd, 'end');
     input.selectionStart = lineStart;
@@ -412,7 +651,9 @@ export class MarkdownEditor {
 
   afterEdit() {
     this.updateCount();
+    this.autoResize();
     if (this.previewOn) this.renderPreviewSoon();
+    if (this.zen) this.renderTocSoon();
   }
 
   // ---------- 图片上传 ----------
@@ -447,6 +688,42 @@ export class MarkdownEditor {
     document.dispatchEvent(new CustomEvent(type, { detail }));
   }
 
+  // ---------- 缩进（Tab / Shift+Tab） ----------
+  // 列表/引用/标题行或多行选中时缩进整行，否则插入两个空格。
+  indentSelection(outdent) {
+    const input = this.input;
+    const start = input.selectionStart;
+    const end = input.selectionEnd;
+    const value = input.value;
+    const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+    let lineEnd = value.indexOf('\n', end);
+    if (lineEnd === -1) lineEnd = value.length;
+    const block = value.slice(lineStart, lineEnd);
+    const multiLine = block.includes('\n');
+    const isStructured = /^(#{1,6}\s|>\s|- |\d+[.] )/.test(block);
+
+    if (!outdent && !multiLine && !isStructured) {
+      this.insertAtCursor('  ');
+      return;
+    }
+
+    const lines = block.split('\n');
+    const mapped = lines.map((l) => {
+      if (outdent) {
+        if (l.startsWith('  ')) return l.slice(2);
+        if (l.startsWith(' ')) return l.slice(1);
+        return l;
+      }
+      return l.trim() === '' && multiLine ? l : '  ' + l;
+    });
+    const newBlock = mapped.join('\n');
+    input.setRangeText(newBlock, lineStart, lineEnd, 'end');
+    input.selectionStart = lineStart;
+    input.selectionEnd = lineStart + newBlock.length;
+    input.focus();
+    this.afterEdit();
+  }
+
   // ---------- 键盘 ----------
   onKeydown(e) {
     // 标签补全优先
@@ -461,11 +738,20 @@ export class MarkdownEditor {
     if (mod && !e.shiftKey && (e.key === 'b' || e.key === 'B')) { e.preventDefault(); this.runCmd('bold'); return; }
     if (mod && !e.shiftKey && (e.key === 'i' || e.key === 'I')) { e.preventDefault(); this.runCmd('italic'); return; }
     if (mod && !e.shiftKey && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); this.runCmd('link'); return; }
+    if (mod && !e.shiftKey && (e.key === 'e' || e.key === 'E')) { e.preventDefault(); this.runCmd('code'); return; }
+    if (mod && e.shiftKey && (e.key === 'x' || e.key === 'X')) { e.preventDefault(); this.runCmd('strike'); return; }
+    if (mod && e.altKey && (e.key === '1' || e.key === '2' || e.key === '3')) {
+      e.preventDefault(); this.runCmd('h' + e.key); return;
+    }
+    // Ctrl+Shift+7/8/9：有序 / 无序 / 任务列表（与常见编辑器一致）
+    if (mod && e.shiftKey && (e.key === '7' || e.key === '&' || e.code === 'Digit7')) { e.preventDefault(); this.runCmd('ol'); return; }
+    if (mod && e.shiftKey && (e.key === '8' || e.key === '*' || e.code === 'Digit8')) { e.preventDefault(); this.runCmd('ul'); return; }
+    if (mod && e.shiftKey && (e.key === '9' || e.key === '(' || e.code === 'Digit9')) { e.preventDefault(); this.runCmd('task'); return; }
     if (mod && e.key === 'Enter') { e.preventDefault(); this.submit(); return; }
 
     if (e.key === 'Tab') {
       e.preventDefault();
-      this.insertAtCursor('  ');
+      this.indentSelection(e.shiftKey);
       return;
     }
 

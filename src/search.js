@@ -32,7 +32,7 @@ export async function searchMemos(db, userId, query, opts = {}) {
     if (total === 0) return { memos: [], total: 0 };
 
     rows = await db.prepare(
-      `SELECT m.id, m.content, m.pinned, m.pinned_order, m.word_count, m.created_at, m.updated_at,
+      `SELECT m.id, m.content, m.pinned, m.pinned_order, m.word_count, m.folder_id, m.created_at, m.updated_at,
               snippet(memos_fts, 0, '<<', '>>', '…', 16) AS snippet
        FROM memos_fts f
        JOIN memos m ON m.id = f.rowid
@@ -52,7 +52,7 @@ export async function searchMemos(db, userId, query, opts = {}) {
     if (total === 0) return { memos: [], total: 0 };
 
     rows = await db.prepare(
-      `SELECT m.id, m.content, m.pinned, m.pinned_order, m.word_count, m.created_at, m.updated_at,
+      `SELECT m.id, m.content, m.pinned, m.pinned_order, m.word_count, m.folder_id, m.created_at, m.updated_at,
               '' AS snippet
        FROM memos m
        WHERE m.user_id = ? AND m.deleted_at IS NULL AND m.content LIKE ? ESCAPE '\\'
@@ -84,6 +84,7 @@ export async function searchMemos(db, userId, query, opts = {}) {
       pinned: Boolean(m.pinned),
       pinned_order: m.pinned_order || 0,
       word_count: m.word_count || 0,
+      folder_id: m.folder_id ?? null,
       created_at: m.created_at,
       updated_at: m.updated_at,
       tags: m._tags || [],

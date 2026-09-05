@@ -116,6 +116,22 @@ const MIGRATIONS = [
       `INSERT INTO memos_fts(rowid, content) SELECT id, content FROM memos WHERE id NOT IN (SELECT rowid FROM memos_fts)`,
     ],
   },
+  // v4：目录（文件夹）层级，与 #标签 是两套独立体系；memos.folder_id 可空 = 未归类
+  {
+    version: 4,
+    sql: [
+      `CREATE TABLE IF NOT EXISTS folders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        parent_id INTEGER,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_folders_user ON folders (user_id, parent_id)`,
+      `ALTER TABLE memos ADD COLUMN folder_id INTEGER`,
+      `CREATE INDEX IF NOT EXISTS idx_memos_user_folder ON memos (user_id, folder_id)`,
+    ],
+  },
 ];
 
 let schemaReady = false;

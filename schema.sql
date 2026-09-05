@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS memos (
   pinned_order INTEGER NOT NULL DEFAULT 0,
   word_count INTEGER NOT NULL DEFAULT 0,
   random_bucket INTEGER NOT NULL DEFAULT 0,
+  folder_id INTEGER,                   -- 所属目录（NULL = 未归类）；与 #标签 是两套独立层级
   deleted_at TEXT,                     -- 软删除：30 天内可恢复
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -31,6 +32,18 @@ CREATE INDEX IF NOT EXISTS idx_memos_user ON memos (user_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_memos_user_pinned ON memos (user_id, pinned, pinned_order, id DESC);
 CREATE INDEX IF NOT EXISTS idx_memos_user_bucket ON memos (user_id, random_bucket);
 CREATE INDEX IF NOT EXISTS idx_memos_user_deleted ON memos (user_id, deleted_at);
+CREATE INDEX IF NOT EXISTS idx_memos_user_folder ON memos (user_id, folder_id);
+
+-- ===== 目录（文件夹，独立于标签的层级体系） =====
+CREATE TABLE IF NOT EXISTS folders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  parent_id INTEGER,                   -- NULL = 顶级目录
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_folders_user ON folders (user_id, parent_id);
 
 -- ===== 标签 =====
 CREATE TABLE IF NOT EXISTS tags (

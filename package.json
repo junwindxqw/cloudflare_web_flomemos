@@ -1,6 +1,6 @@
 {
   "name": "flomemos",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Flomemos — flomo 风格的轻量级笔记应用，部署在 Cloudflare 免费档（Workers + D1 + R2）",
   "private": true,
   "type": "module",
