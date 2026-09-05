@@ -142,6 +142,35 @@ function ignoreAlterError(err) {
   return /duplicate column/i.test(String(err?.message || ''));
 }
 
+// 判断错误是否为「对象已存在」类（重复列 / 已有表 / 已有索引），视为幂等成功。
+function isAlreadyAppliedError(err) {
+  return /duplicate column|already exists|UNIQUE constraint/i.test(String(err?.message || ''));
+}
+
+// ALTER 前先查列是否存在：失败重试时避免依赖错误文本判断。
+async function columnExists(db, table, column) {
+  try {
+    const rows = await db.prepare('SELECT name FROM pragma_table_info(?) WHERE name = ?').bind(table, column).all();
+    return (rows.results || []).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+// 执行单条迁移语句；ALTER ... ADD COLUMN 先做存在性检查（幂等）。
+async function applyMigrationStep(db, sql) {
+  const alterMatch = sql.match(/^ALTER\s+TABLE\s+\w+\s+ADD\s+COLUMN\s+(\w+)/i);
+  if (alterMatch) {
+    // 迁移 v2 的写法是 "ALTER TABLE x ADD COLUMN col ..."，列名在第 1 组
+    const column = alterMatch[1];
+    const tableMatch = sql.match(/^ALTER\s+TABLE\s+(\w+)/i);
+    if (tableMatch && (await columnExists(db, tableMatch[1], column))) {
+      return;
+    }
+  }
+  await db.prepare(sql).run();
+}
+
 // ensureSchema 异步执行一次；后续调用直接 await 同一 Promise。
 // 任何错误吞掉不抛出，避免阻塞请求（schema 失败时降级使用现有表）。
 export function ensureSchema(db) {
@@ -177,17 +206,26 @@ async function runMigrations(db) {
   const done = new Set(appliedRows.map((r) => r.version));
   for (const m of MIGRATIONS) {
     if (done.has(m.version)) continue;
+    let failed = 0;
     for (const sql of m.sql) {
       try {
-        await db.prepare(sql).run();
+        await applyMigrationStep(db, sql);
       } catch (e) {
-        if (!ignoreAlterError(e)) {
-          console.warn('migration step failed:', sql.slice(0, 60), e.message);
+        if (!isAlreadyAppliedError(e)) {
+          failed += 1;
+          console.error('migration v' + m.version + ' step failed (will retry next boot):', sql.slice(0, 80), e.message);
         }
       }
     }
-    try {
-      await db.prepare('INSERT INTO migrations (version, applied_at) VALUES (?, ?)').bind(m.version, Date.now()).run();
-    } catch { /* ignore duplicate */ }
+    // 只有全部步骤成功（或幂等跳过）才记账；失败的迁移下次启动重试
+    if (failed === 0) {
+      try {
+        await db.prepare('INSERT INTO migrations (version, applied_at) VALUES (?, ?)').bind(m.version, Date.now()).run();
+      } catch (e) {
+        if (!isAlreadyAppliedError(e)) console.warn('migration version record failed:', m.version, e.message);
+      }
+    } else {
+      console.error('migration v' + m.version + ' incomplete: ' + failed + ' step(s) failed; version NOT recorded');
+    }
   }
 }
